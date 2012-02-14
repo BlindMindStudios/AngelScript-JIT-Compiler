@@ -29,31 +29,42 @@ When including files into the project, choose one of "virtual_asm_windows.cpp" a
     #include "as_jit.h"
 
     int main() {
-    	asIScriptEngine* engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
-		//Create the JIT Compiler. The build flags are explained elsewhere, as well as in as_jit.h
-    	asCJitCompiler* jit = new asCJITCompiler(0);
-	
-    	//Enable JIT helper instructions; without these, the JIT will not be invoked
-    	engine->SetEngineProperty(asEP_INCLUDE_JIT_INSTRUCTIONS, 1);
-    	//Bind the JIT compiler to the engine
-		engine->SetJITCompiler(jit);
-		
-		//Load your scripts. The JIT will allocate code pages and build native code; note that some native execution will occurs (e.g. for global variables)
-		//The JIT is thread-safe, so multiple engines can use the same JIT Compiler, and multiple engines can be compiling at once
-		LoadAndCompileScripts();
-		
-		//Optionally, you can finalize the JIT's code pages, preventing any alteration to the native code
-		jit->finalizePages();
-		
-		//Now that the JIT is in place, the scripts will be executed almost entirely in native code
-		RunScripts();
-		
-		//Clean up your engine. Code pages will automatically be cleared by the JIT when the engine is released.
-		DiscardModules();
-		engine->Release();
-		delete jit;
+        asIScriptEngine* engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
 
-    	return 0;
+        //Create the JIT Compiler. The build flags are explained below,
+        //as well as in as_jit.h
+        asCJitCompiler* jit = new asCJITCompiler(0);
+
+        //Enable JIT helper instructions; without these,
+        //the JIT will not be invoked
+        engine->SetEngineProperty(asEP_INCLUDE_JIT_INSTRUCTIONS, 1);
+
+        //Bind the JIT compiler to the engine
+        engine->SetJITCompiler(jit);
+
+        //Load your scripts. The JIT will allocate code pages and build
+        //native code; note that some native execution will occur
+        //(e.g. for global variables)
+
+        //The JIT is thread-safe, so multiple engines can use the same
+        //JIT Compiler, and multiple engines can be compiling at once
+        LoadAndCompileScripts();
+
+        //Optionally, you can finalize the JIT's code pages,
+        //preventing any alteration to the native code
+        jit->finalizePages();
+
+        //Now that the JIT is in place, the scripts will be executed
+        //almost entirely in native code
+        RunScripts();
+
+        //Clean up your engine. Code pages will automatically be cleared
+        //by the JIT when the engine is released.
+        DiscardModules();
+        engine->Release();
+        delete jit;
+
+        return 0;
     }
 
 Build Flags
