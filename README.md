@@ -25,7 +25,6 @@ The JIT makes extensive use of C++0x additions, such as Lambdas and the auto key
 This short example shows the basics of utilizing the JIT. The folder containing "angelscript.h" should be an include path in the project.
 When including files into the project, choose one of "virtual_asm_windows.cpp" and "virtual_asm_linux.cpp" depending on your intended platform.
 
-<blockquote>
     #include "angelscript.h"
     #include "as_jit.h"
 
@@ -56,22 +55,26 @@ When including files into the project, choose one of "virtual_asm_windows.cpp" a
 
     	return 0;
     }
-</blockquote>
 
 Build Flags
 -----------
 
 *JIT_NO_SUSPEND*
+
 The JIT will not check for suspend events. Even if the AngelScript engine is set for fewer suspensions, some will remain, so this option is still useful.
 
 *JIT_SYSCALL_FPU_NORESET*
+
 Disables the FPU reset around functions for platforms that always clean up the FPU. MSVC appears to work fine without FPU resets, and the result will be slightly faster.
 
 *JIT_SYSCALL_NO_ERRORS*
+
 If system functions never set exceptions on a script context, this produces a smaller and faster output. Setting exceptions with this option enabled will likely result in crashes.
 
 *JIT_ALLOC_SIMPLE*
+
 When using simple allocation (e.g. default new/delete or malloc/free) that does not read any script states, this produces smaller and faster outputs.
 
 *JIT_NO_SWITCHES*
+
 Disables native switch statements in the JIT. Native switches currently use a rather large amount of memory; disable this option for a smaller, but slower, output.
