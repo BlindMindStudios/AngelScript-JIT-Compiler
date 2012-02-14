@@ -1,4 +1,3 @@
-#ifdef WIN_MODE
 #include "virtual_asm.h"
 #include <Windows.h>
 
@@ -60,4 +59,3 @@ CriticalSection::~CriticalSection() {
 }
 
 };
-#endif

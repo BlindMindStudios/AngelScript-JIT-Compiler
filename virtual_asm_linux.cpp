@@ -1,4 +1,3 @@
-#ifdef LIN_MODE
 #include "virtual_asm.h"
 #include <sys/mman.h>
 #include <unistd.h>
@@ -63,4 +62,3 @@ CriticalSection::~CriticalSection() {
 }
 
 };
-#endif
