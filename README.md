@@ -45,7 +45,6 @@ When including files into the project, choose one of "virtual_asm_windows.cpp" a
         //Load your scripts. The JIT will allocate code pages and build
         //native code; note that some native execution will occur
         //(e.g. for global variables)
-
         //The JIT is thread-safe, so multiple engines can use the same
         //JIT Compiler, and multiple engines can be compiling at once
         LoadAndCompileScripts();
