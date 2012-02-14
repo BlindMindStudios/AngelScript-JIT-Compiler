@@ -6,6 +6,8 @@ Currently supports x86 processors.
 
 Compatible with the MSVC 2010 and GCC 4.6.2 compilers.
 
+Last made compatible with revision 1173 of the AngelScript repository.
+
 License
 -------
 
