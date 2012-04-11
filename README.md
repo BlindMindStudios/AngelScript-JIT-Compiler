@@ -1,12 +1,10 @@
 Angelscript JIT Compiler
 ========================
-A Just-In-Time Compiler for use with AngelScript.
+A Just-In-Time Compiler for use with build 2.23.0 of AngelScript.
 
-Currently supports x86 processors.
+Supports x86 on all supported platforms, and x86-64 on GCC.
 
 Compatible with the MSVC 2010 and GCC 4.6.2 compilers.
-
-Last made compatible with revision 1173 of the AngelScript repository.
 
 License
 -------
