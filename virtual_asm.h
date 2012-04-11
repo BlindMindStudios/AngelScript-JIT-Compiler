@@ -1,4 +1,7 @@
+#pragma once
 #include <stddef.h>
+
+#include <stdio.h>
 
 namespace assembler {
 
@@ -16,6 +19,38 @@ enum RegCode : byte {
 	EBP = 5, ADDR = 5,
 	ESI = 6,
 	EDI = 7,
+
+	R8 = 8,
+	R9 = 9,
+	R10 = 10,
+	R12 = 12,
+	R13 = 13,
+	R14 = 14,
+	R15 = 15,
+
+	//R11 is supervolatile. Can change in between
+	//virtual asm ops (used as a temporary), so be careful
+	//with using it.
+	R11 = 11,
+
+	//XMM registers have unique numbers so we can recognize them
+	XMM0 = 16,
+	XMM1 = 17,
+	XMM2 = 18,
+	XMM3 = 19,
+	XMM4 = 20,
+	XMM5 = 21,
+	XMM6 = 22,
+	XMM7 = 23,
+
+	XMM8 = 24,
+	XMM9 = 25,
+	XMM10 = 26,
+	XMM11 = 27,
+	XMM12 = 28,
+	XMM13 = 29,
+	XMM14 = 30,
+	XMM15 = 31,
 
 	NONE = 0,
 };
@@ -65,6 +100,26 @@ struct CriticalSection {
 
 	CriticalSection();
 	~CriticalSection();
+};
+
+struct AddrPrefix {
+	MemAddress& adr;
+	bool defLong;
+	unsigned char further;
+
+	AddrPrefix(MemAddress& Adr, bool DefLong, unsigned char Further)
+		: adr(Adr), defLong(DefLong), further(Further) {
+	}
+};
+
+struct RegPrefix {
+	Register& reg;
+	unsigned short other;
+	bool defLong;
+
+	RegPrefix(Register& Reg, unsigned short Other, bool DefLong)
+		: reg(Reg), other(Other), defLong(DefLong) {
+	}
 };
 
 //Stores information about the code page
@@ -166,9 +221,17 @@ struct Processor {
 	template<class T>
 	Processor& operator<<(MemAddress addr);
 
+	//Pushes bytes representing a prefix
+	template<class T>
+	Processor& operator<<(AddrPrefix pr);
+
+	template<class T>
+	Processor& operator<<(RegPrefix pr);
+
 	//Calls the function, passing the arguments specified by 'args'
 	//args is a string like "rrcmrm" which specifies arguments as sourced by a Register*, MemAddres*, or a constant
 	//EBP is invalid during the call
+	void call_cdecl(void* func, const char* args, va_list ap);
 	void call_cdecl(void* func, const char* args, ...);
 
 	//Prepares for a call to manual call to a cdecl function (Do not use with call_cdecl)
@@ -210,6 +273,16 @@ struct Processor {
 	void push(Register& reg);
 	//Pops the alue of <reg> from the stack
 	void pop(Register& reg);
+
+	//Get a register corresponding to an argument on 64-bit calling convention
+	unsigned maxIntArgs64();
+	unsigned maxFloatArgs64();
+	bool isIntArg64Register(unsigned char number, unsigned char arg);
+	bool isFloatArg64Register(unsigned char number, unsigned char arg);
+	Register intArg64(unsigned char number, unsigned char arg);
+	Register floatArg64(unsigned char number, unsigned char arg);
+	Register floatReturn64();
+	Register intReturn64();
 
 	//Pushes the memory at <address> onto the stack (Pushes are always pushSize() large, pushing larger values invokes multiple pushes)
 	void push(MemAddress address);
@@ -278,6 +351,10 @@ struct FloatingPointUnit {
 	void store_dword(MemAddress address, bool pop = true);
 	void store_double(MemAddress address, bool pop = true);
 
+	//Control words
+	void store_control_word(MemAddress address);
+	void load_control_word(MemAddress address);
+
 	//Effect: FPU_0 -= <reg>
 	void operator-=(FloatReg reg);
 
@@ -292,14 +369,18 @@ struct FloatingPointUnit {
 	
 	//Effect: FPU_0 += *(double*)address
 	void add_double(MemAddress address);
+	void add_double(FloatReg reg, bool pop = true);
 	//Effect: FPU_0 -= *(double*)address
 	// If Reversed: FPU_0 = *(double*)address - FPU_0
 	void sub_double(MemAddress address, bool reversed = false);
+	void sub_double(FloatReg reg, bool reversed = false, bool pop = true);
 	//Effect: FPU_0 *= *(double*)address
 	void mult_double(MemAddress address);
+	void mult_double(FloatReg reg, bool pop = true);
 	//Effect: FPU_0 /= *(double*)address
 	// If Reversed: FPU_0 = *(double*)address / FPU_0
 	void div_double(MemAddress address, bool reversed = false);
+	void div_double(FloatReg reg, bool reversed = false, bool pop = true);
 };
 
 //Temporary struct that represents an addition to a memory address, with optional scaling
@@ -322,6 +403,7 @@ struct MemAddress {
 	RegCode scaleReg;
 	unsigned char scaleFactor;
 	unsigned bitMode;
+	bool Float;
 	bool Signed;
 
 	MemAddress(Processor& CPU, void* address);
@@ -342,12 +424,14 @@ struct MemAddress {
 	
 	void operator=(unsigned int value);
 	void operator=(void* pointer);
-	void operator=(Register& fromReg);
+	void operator=(Register fromReg);
 
 	void operator&=(unsigned int value);
+	void operator|=(unsigned int value);
 
 	//Copies memory using an intermediate register
 	void direct_copy(MemAddress address, Register& intermediate);
+	AddrPrefix prefix(unsigned char further = 0, bool defLong = false);
 };
 
 //Converts a MemAddress from the default unsigned <cpu bit mode> to match the passed type
@@ -357,6 +441,12 @@ MemAddress as(MemAddress addr) {
 	addr.Signed = (T)-1 < (T)0;
 	return addr;
 }
+
+template<>
+MemAddress as<float>(MemAddress addr);
+
+template<>
+MemAddress as<double>(MemAddress addr);
 
 //Structure that provides operations that can be performed on a register
 //  Also provides the means to generate MemAddresses relative to a register via dereference (e.g. *eax+8)
@@ -414,16 +504,25 @@ struct Register {
 	//Copies a smaller data type, retaining the sign
 	void copy_expanding(MemAddress address);
 
-	void operator=(unsigned int value);
+	void operator=(unsigned long long value);
 	void operator=(void* pointer);
-	void operator=(Register& other);
+	void operator=(Register other);
 	void operator=(MemAddress addr);
 	
-	void operator==(Register& other);
+	void operator==(Register other);
 	void operator==(MemAddress addr);
-	void operator==(unsigned long long test);
+	void operator==(unsigned int test);
 
 	void setIf(JumpType condition);
+
+	bool xmm();
+	bool extended();
+	RegCode index();
+
+	RegPrefix prefix(unsigned short other = 0, bool defaultLong = false);
+	RegPrefix prefix(Register& other, bool defaultLong = false);
+	unsigned char modrm(unsigned short other);
+	unsigned char modrm(Register& other);
 
 	//Multiplies *address with value, stores the result in this register
 	void multiply_signed(MemAddress address, int value);
@@ -432,4 +531,11 @@ struct Register {
 	void divide();
 	void divide_signed();
 };
+
+//Converts a MemAddress from the default unsigned <cpu bit mode> to match the passed type
+template<class T>
+Register as(Register reg) {
+	reg.bitMode = sizeof(T) * 8;
+	return reg;
+}
 };

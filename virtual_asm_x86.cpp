@@ -47,6 +47,22 @@ void moveToUpperDWORD(MemAddress& address) {
 		address.absolute_address = (byte*)address.absolute_address + 4;
 }
 
+template<>
+MemAddress as<float>(MemAddress addr) {
+	addr.bitMode = sizeof(float) * 8;
+	addr.Signed = true;
+	addr.Float = true;
+	return addr;
+}
+
+template<>
+MemAddress as<double>(MemAddress addr) {
+	addr.bitMode = sizeof(double) * 8;
+	addr.Signed = true;
+	addr.Float = true;
+	return addr;
+}
+
 struct Argument {
 	Register* reg;
 	MemAddress* mem;
@@ -94,7 +110,7 @@ void Processor::call_cdecl_prep(unsigned argBytes) {
 #ifndef _MSC_VER
 	//Align to 16 byte boundary if not on MSVC
 	// Note: We already have cpu.stackDepth pushed, then we're pushing ebp to keep track of the stack
-	unsigned stackOffset = (stackDepth + 4 + argBytes) % 16;
+	unsigned stackOffset = (stackDepth + pushSize()) % 16;
 
 	Register esp(*this, ESP), ebp(*this, EBP);
 	push(ebp);
@@ -204,30 +220,41 @@ void Processor::migrate(CodePage& prevPage, CodePage& newPage) {
 	op = newPage.getActivePage();
 }
 
+IndexScale factorToScale(unsigned char scale) {
+	switch(scale) {
+	case 1:
+		return Scale1; break;
+	case 2:
+		return Scale2; break;
+	case 4:
+		return Scale4; break;
+	case 8:
+		return Scale8; break;
+	default: throw 0;
+	}
+}
+
 template<>
 Processor& Processor::operator<<(MemAddress addr) {
-	if(addr.absolute_address != 0)
-		return *this << mod_rm(addr.other, ADR, ADDR) << addr.absolute_address;
+	if(addr.absolute_address != 0) {
+		if(addr.scaleFactor == 0)
+			return *this << mod_rm(addr.other, ADR, ADDR) << addr.absolute_address;
+		else {
+			if(addr.scaleReg == ESP)
+				throw 0;
+			IndexScale scale = factorToScale(addr.scaleFactor);
+			return *this << mod_rm(addr.other, ADR, SIB) << sib(addr.scaleReg, scale, EBP) << addr.absolute_address;
+		}
+	}
 
 	if(addr.scaleFactor != 0) {
-		IndexScale scale;
-		switch(addr.scaleFactor) {
-		case 1:
-			scale = Scale1; break;
-		case 2:
-			scale = Scale2; break;
-		case 4:
-			scale = Scale4; break;
-		case 8:
-			scale = Scale8; break;
-		default: throw 0;
-		}
+		IndexScale scale = factorToScale(addr.scaleFactor);
 
 		//EBP can't accept a scaled index, and ESP doesn't perform scaling
-		if(addr.code == EBP || addr.code == ESP)
+		if(addr.scaleReg == ESP)
 			throw 0;
 
-		if(addr.offset == 0)
+		if(addr.offset == 0 && addr.code != EBP)
 			return *this << mod_rm(addr.other, ADR, SIB) << sib(addr.scaleReg, scale, addr.code);
 		else if(addr.offset >= CHAR_MIN && addr.offset <= CHAR_MAX)
 			return *this << mod_rm(addr.other, ADR8, SIB) << sib(addr.scaleReg, scale, addr.code) << (char)addr.offset;
@@ -301,7 +328,7 @@ void Processor::push(size_t value) {
 
 void Processor::pop(unsigned int count) {
 	Register esp(*this, ESP);
-	esp += count * 4;
+	esp += count * pushSize();
 }
 
 void Processor::call(Register& reg) {
@@ -501,11 +528,23 @@ void MemAddress::operator&=(unsigned int value) {
 	cpu << '\x81' << *this << value;
 }
 
+void MemAddress::operator|=(unsigned int value) {
+	other = EX_7;
+	switch(bitMode) {
+	case 8:
+		cpu << '\x80' << *this << (byte)value; break;
+	case 16:
+		cpu << '\x66' << '\x81' << *this << (unsigned short)value; break;
+	case 32:
+		cpu << '\x81' << *this << value; break;
+	}
+}
+
 void MemAddress::operator=(void* value) {
 	cpu << '\xC7' << *this << value;
 }
 
-void MemAddress::operator=(Register& fromReg) {
+void MemAddress::operator=(Register fromReg) {
 	other = fromReg.code;
 	switch(bitMode) {
 	case 8:
@@ -785,20 +824,20 @@ void Register::operator=(void* pointer) {
 	cpu << (byte)('\xB8'+code) << pointer;
 }
 
-void Register::operator=(unsigned int value) {
+void Register::operator=(unsigned long long value) {
 	switch(getBitMode()) {
 	case 8:
 		cpu << (byte)('\xB0'+code) << (byte)value; break;
 	case 16:
 		cpu << '\x66' << (byte)('\xB8'+code) << (unsigned short)value; break;
 	case 32:
-		cpu << (byte)('\xB8'+code) << value; break;
+		cpu << (byte)('\xB8'+code) << (unsigned int)value; break;
 	case 64:
 		throw 0;
 	}
 }
 
-void Register::operator=(Register& other) {
+void Register::operator=(Register other) {
 	if(code != other.code)
 		cpu << '\x89' << mod_rm(other.code,REG,code);
 }
@@ -831,7 +870,7 @@ void Register::operator=(MemAddress addr) {
 	}
 }
 
-void Register::operator==(Register& other) {
+void Register::operator==(Register other) {
 	switch(getBitMode()) {
 	case 8:
 		cpu << '\x3A' << mod_rm(code,REG,other.code); break;
@@ -858,14 +897,14 @@ void Register::operator==(MemAddress addr) {
 	}
 }
 
-void Register::operator==(unsigned long long test) {
+void Register::operator==(unsigned int test) {
 	switch(getBitMode()) {
 	case 8:
 		cpu << '\x80' << mod_rm(EX_7,REG,code) << (byte)test; break;
 	case 16:
 		cpu << '\x66' << '\x80' << mod_rm(EX_7,REG,code) << (unsigned short)test; break;
 	case 32:
-		cpu << '\x81' << mod_rm(EX_7,REG,code) << (unsigned int)test; break;
+		cpu << '\x81' << mod_rm(EX_7,REG,code) << test; break;
 	case 64:
 		throw 0;
 	}
@@ -903,7 +942,7 @@ void FloatingPointUnit::negate() {
 }
 
 void FloatingPointUnit::load_const_1() {
-	cpu << '\xDD' << '\xE8';
+	cpu << '\xD9' << '\xE8';
 }
 
 void FloatingPointUnit::operator-=(FloatReg reg) {
@@ -920,9 +959,35 @@ void FloatingPointUnit::add_double(MemAddress address) {
 	cpu << '\xDC' << address;
 }
 
+void FloatingPointUnit::add_double(FloatReg reg, bool pop) {
+	if(pop)
+		cpu << '\xDE' << mod_rm(EX_0,REG,reg);
+	else
+		cpu << '\xDC' << mod_rm(EX_0,REG,reg);
+}
+
+void FloatingPointUnit::sub_double(MemAddress address, bool reversed) {
+	address.other = reversed ? EX_5 : EX_4;
+	cpu << '\xDC' << address;
+}
+
+void FloatingPointUnit::sub_double(FloatReg reg, bool reversed, bool pop) {
+	if(pop)
+		cpu << '\xDE' << mod_rm(reversed ? EX_5 : EX_4, REG, reg);
+	else
+		cpu << '\xDC' << mod_rm(reversed ? EX_5 : EX_4, REG, reg);
+}
+
 void FloatingPointUnit::mult_double(MemAddress address) {
 	address.other = EX_1;
 	cpu << '\xDC' << address;
+}
+
+void FloatingPointUnit::mult_double(FloatReg reg, bool pop) {
+	if(pop)
+		cpu << '\xDE' << mod_rm(EX_1,REG,reg);
+	else
+		cpu << '\xDC' << mod_rm(EX_1,REG,reg);
 }
 
 void FloatingPointUnit::div_double(MemAddress address, bool reversed) {
@@ -930,9 +995,11 @@ void FloatingPointUnit::div_double(MemAddress address, bool reversed) {
 	cpu << '\xDC' << address;
 }
 
-void FloatingPointUnit::sub_double(MemAddress address, bool reversed) {
-	address.other = reversed ? EX_5 : EX_4;
-	cpu << '\xDC' << address;
+void FloatingPointUnit::div_double(FloatReg reg, bool reversed, bool pop) {
+	if(pop)
+		cpu << '\xDE' << mod_rm(reversed ? EX_7 : EX_6, REG, reg);
+	else
+		cpu << '\xDC' << mod_rm(reversed ? EX_7 : EX_6, REG, reg);
 }
 	
 void FloatingPointUnit::add_float(MemAddress address) {
@@ -990,6 +1057,16 @@ void FloatingPointUnit::compare_toCPU(FloatReg floatReg, bool pop) {
 		cpu << '\xDF' << mod_rm(EX_5,REG,floatReg);
 	else
 		cpu << '\xDB' << mod_rm(EX_5,REG,floatReg);
+}
+
+void FloatingPointUnit::store_control_word(MemAddress address) {
+	address.other = EX_7;
+	cpu << '\xD9' << address;
+}
+
+void FloatingPointUnit::load_control_word(MemAddress address) {
+	address.other = EX_5;
+	cpu << '\xD9' << address;
 }
 
 };
