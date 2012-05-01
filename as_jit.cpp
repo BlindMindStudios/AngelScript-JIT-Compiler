@@ -612,8 +612,8 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			waitingForEntry = false;
 			break;
 
-		case asBC_POP:
-			esi += asBC_WORDARG0(pOp) * sizeof(asDWORD);
+		case asBC_PopPtr:
+			esi += sizeof(void*);
 			break;
 		
 		//Handle all pushes here by allocating all contiguous push memory at once
@@ -624,8 +624,6 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 	}\
 	reservedPushBytes -= use;
 
-		case asBC_PUSH:
-			pushPrep( asBC_WORDARG0(pOp) * sizeof(asDWORD) ); break;
 		case asBC_PshC4:
 			pushPrep(sizeof(asDWORD));
 			*esi + reservedPushBytes = asBC_DWORDARG(pOp);
@@ -644,6 +642,11 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			pushPrep(sizeof(asDWORD));
 			eax = MemAddress(cpu, (void*)asBC_PTRARG(pOp));
 			*esi + reservedPushBytes = eax;
+			break;
+		case asBC_PshGPtr:
+			pushPrep(sizeof(void*));
+			pax = as<void*>(MemAddress(cpu, (void*)asBC_PTRARG(pOp)));
+			as<void*>(*esi + reservedPushBytes) = pax;
 			break;
 		case asBC_PshC8:
 			{
@@ -762,8 +765,10 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			do_jump(Jump);
 			break;
 
+		case asBC_JLowZ: //ClrHi is a NOP, so JlowZ is JZ (same with NZ)
 		case asBC_JZ:
 			bl &= bl; do_jump(Zero); break;
+		case asBC_JLowNZ:
 		case asBC_JNZ:
 			bl &= bl; do_jump(NotZero); break;
 		case asBC_JS:
@@ -911,10 +916,17 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		//case asBC_PshC8: //All pushes are handled above, near asBC_PshC4
 		//case asBC_PshVPtr:
 		case asBC_RDSPtr:
+			{
 			pax = as<void*>(*esi);
+
+			pax == pax;
+			auto notNull = cpu.prep_short_jump(NotZero);
+			Return(false);
+			cpu.end_short_jump(notNull);
+
 			pax = as<void*>(*pax);
 			as<void*>(*esi) = pax;
-			break;
+			} break;
 		case asBC_CMPd:
 			{
 				fpu.load_double(*edi-offset1);
@@ -1199,13 +1211,19 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				as<void*>(*pax).direct_copy(as<void*>(*pcx), pdx);
 				as<void*>(*pcx) = nullptr;
 			} break;
+		case asBC_RefCpyV:
 		case asBC_REFCPY:
 			{
 			asCObjectType *objType = (asCObjectType*)(size_t)asBC_PTRARG(pOp);
 
 			if(objType->flags & asOBJ_NOCOUNT) {
-				pax = as<void*>(*esi);
-				esi += sizeof(void*);
+				if(op == asBC_REFCPY) {
+					pax = as<void*>(*esi);
+					esi += sizeof(void*);
+				}
+				else { //Inline PSF
+					pax.copy_address(as<void*>(*edi-offset0));
+				}
 				pcx = as<void*>(*esi);
 				as<void*>(*pax) = pcx;
 			}
@@ -1218,8 +1236,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				asSTypeBehaviour *beh = &objType->beh;
 
-				cpu.push(as<void*>(*esi));
-				esi += sizeof(void*);
+				if(op == asBC_REFCPY) {
+					cpu.push(as<void*>(*esi));
+					esi += sizeof(void*);
+				}
+				else { //Inline PSF
+					pax.copy_address(as<void*>(*edi-offset0));
+					cpu.push(pax);
+				}
 				pcx = as<void*>(*esi);
 
 				pcx &= pcx; cpu.push(pcx);
@@ -1295,9 +1319,16 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			*edi-offset0 = *data;
 #endif
 			} break;
-		//case asBC_ADDSi:
-			//*esi += asBC_SWORDARG0(pOp);
-			//break;
+		case asBC_ADDSi:
+			{
+			pax = as<void*>(*esi);
+			pax == pax;
+			auto notNull = cpu.prep_short_jump(NotZero);
+			Return(false);
+			cpu.end_short_jump(notNull);
+			pax += asBC_SWORDARG0(pOp);
+			as<void*>(*esi) = pax;
+			} break;
 
 		case asBC_CpyVtoV4:
 			as<asDWORD>(*edi-offset0).direct_copy(as<asDWORD>(*edi-offset1), eax);
@@ -2060,8 +2091,6 @@ unsigned findTotalPushBatchSize(asDWORD* nextOp, asDWORD* endOfBytecode) {
 	while(nextOp < endOfBytecode) {
 		asEBCInstr op = (asEBCInstr)*(asBYTE*)nextOp;
 		switch(op) {
-			case asBC_PUSH:
-				bytes += asBC_WORDARG0(nextOp) * sizeof(asDWORD); break;
 			case asBC_PshC4:
 			case asBC_PshV4:
 			case asBC_PshG4:
@@ -2078,6 +2107,7 @@ unsigned findTotalPushBatchSize(asDWORD* nextOp, asDWORD* endOfBytecode) {
 			case asBC_OBJTYPE:
 			case asBC_PGA:
 			case asBC_VAR:
+			case asBC_PshGPtr:
 				bytes += sizeof(void*); break;
 			default:
 				return bytes;
