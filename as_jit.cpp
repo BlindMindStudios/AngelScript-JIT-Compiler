@@ -1930,6 +1930,12 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_LoadThisR:
 			{
 			pbx = as<void*>(*edi);
+
+			pbx &= pbx;
+			auto j = cpu.prep_short_jump(NotZero);
+			Return(false);
+			cpu.end_short_jump(j);
+
 			short off = asBC_SWORDARG0(pOp);
 			if(off > 0)
 				pbx += off;
@@ -2032,9 +2038,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 #endif
 			} break;
 		case asBC_LoadRObjR:
+			{
 			pbx = as<void*>(*edi-offset0);
+			pbx &= pbx;
+			auto j = cpu.prep_short_jump(NotZero);
+			Return(false);
+			cpu.end_short_jump(j);
 			pbx += asBC_SWORDARG1(pOp);
-			break;
+			} break;
 		case asBC_LoadVObjR:
 			pbx.copy_address(*edi+(asBC_SWORDARG1(pOp) - offset0));
 			break;
