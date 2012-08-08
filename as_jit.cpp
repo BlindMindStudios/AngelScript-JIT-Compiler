@@ -44,7 +44,8 @@ short offset(asDWORD* op, unsigned n) {
 }
 
 //Wrappers so we can deal with complex pointers/calling conventions
-void stdcall popStackIfNotEmpty(asIScriptContext* ctx);
+
+//void stdcall popStackIfNotEmpty(asIScriptContext* ctx); //No longer used (was used in asBC_RET)
 
 void stdcall allocScriptObject(asCObjectType* type, asCScriptFunction* constructor, asIScriptEngine* engine, asSVMRegisters* registers);
 
@@ -737,30 +738,35 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					);
 				ReturnFromScriptCall();
 			} break;
-		case asBC_RET:
-			{
-				check_space(128);
-				pax = as<void*>(*esp+cpu.stackDepth);
-				pax = as<void*>(*pax + offsetof(asSVMRegisters,ctx));
-				cpu.call_stdcall((void*)popStackIfNotEmpty,"r",&pax);
-
-				//Normally we have to unload our full state, but in a return, the bytecode, frame, and stack pointer are already where they need to be
-				pdx = as<void*>(*esp+cpu.stackDepth); //Register pointer
-#ifdef JIT_64
-				as<void*>(*pdx+offsetof(asSVMRegisters,valueRegister)) = pbx; //VM Temporary
-#else
-				*pdx+offsetof(asSVMRegisters,valueRegister) = ebx; //VM Temporary
-				*pdx+offsetof(asSVMRegisters,valueRegister)+4 = ebp; //VM Temporary (upper half)
-#endif
-				as<void*>(*pdx+offsetof(asSVMRegisters,stackPointer)) += asBC_WORDARG0(pOp)*sizeof(asDWORD);
-				cpu.pop(ebp);
-				cpu.pop(ebx);
-				cpu.pop(edi);
-				cpu.pop(esi);
-				cpu.ret();
-				waitingForEntry = true;
-			}
-			break;
+		//case asBC_RET: //We don't handle asBC_RET, because it gains very little for the added difficulty in keeping it correct
+//			{
+//				check_space(128);
+//
+//				pax = as<void*>(*esp+cpu.stackDepth);
+//
+//				//Copy over the program pointer, so that our state will be correct
+//				as<void*>(*pax + offsetof(asSVMRegisters,programPointer)) = pOp;
+//
+//				pax = as<void*>(*pax + offsetof(asSVMRegisters,ctx));
+//				cpu.call_stdcall((void*)popStackIfNotEmpty,"r",&pax);
+//
+//				//Normally we have to unload our full state, but in a return, the bytecode, frame, and stack pointer are already where they need to be
+//				pdx = as<void*>(*esp+cpu.stackDepth); //Register pointer
+//#ifdef JIT_64
+//				as<void*>(*pdx+offsetof(asSVMRegisters,valueRegister)) = pbx; //VM Temporary
+//#else
+//				*pdx+offsetof(asSVMRegisters,valueRegister) = ebx; //VM Temporary
+//				*pdx+offsetof(asSVMRegisters,valueRegister)+4 = ebp; //VM Temporary (upper half)
+//#endif
+//				as<void*>(*pdx+offsetof(asSVMRegisters,stackPointer)) += asBC_WORDARG0(pOp)*sizeof(asDWORD);
+//				cpu.pop(ebp);
+//				cpu.pop(ebx);
+//				cpu.pop(edi);
+//				cpu.pop(esi);
+//				cpu.ret();
+//				waitingForEntry = true;
+//			}
+//			break;
 		case asBC_JMP:
 			do_jump(Jump);
 			break;
@@ -919,7 +925,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			{
 			pax = as<void*>(*esi);
 
-			pax == pax;
+			pax &= pax;
 			auto notNull = cpu.prep_short_jump(NotZero);
 			Return(false);
 			cpu.end_short_jump(notNull);
@@ -1101,12 +1107,15 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				int func = asBC_INTARG(pOp+AS_PTR_SIZE);
 
 				if(objType->flags & asOBJ_SCRIPT_OBJECT) {
+					pax = as<void*>(*esp + cpu.stackDepth);
+					as<void*>(*pax + offsetof(asSVMRegisters,programPointer)) = pOp;
+					as<void*>(*pax + offsetof(asSVMRegisters,stackPointer)) = esi;
+					as<void*>(*pax + offsetof(asSVMRegisters,stackFramePointer)) = pdi;
+
 					asIScriptEngine* engine = function->GetEngine();
 					asCScriptFunction* f = ((asCScriptEngine*)engine)->GetScriptFunction(func);
 
-					MemAddress regPointer(*esp + cpu.stackDepth);
-
-					cpu.call_stdcall((void*)allocScriptObject,"cccm",objType,f,engine,&regPointer);
+					cpu.call_stdcall((void*)allocScriptObject,"cccr",objType,f,engine,&pax);
 
 					ReturnFromScriptCall();
 				}
@@ -1179,6 +1188,9 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				as<void*>(*edi-offset0) = nullptr;
 				cpu.end_short_jump(p);
+			}
+			else {
+				as<void*>(*edi-offset0) = nullptr;
 			}
 			}break;
 		case asBC_LOADOBJ:
@@ -1322,10 +1334,12 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_ADDSi:
 			{
 			pax = as<void*>(*esi);
-			pax == pax;
+
+			pax &= pax;
 			auto notNull = cpu.prep_short_jump(NotZero);
 			Return(false);
 			cpu.end_short_jump(notNull);
+
 			pax += asBC_SWORDARG0(pOp);
 			as<void*>(*esi) = pax;
 			} break;
@@ -2050,7 +2064,9 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			pbx.copy_address(*edi+(asBC_SWORDARG1(pOp) - offset0));
 			break;
 		default:
-			//printf("Unhandled op: %i\n", op);
+			printf("Unhandled op: %i\n", op);
+		//OPs that are purposefully not handled belong here. handling RET provides almost no gains in execution time, but reduces compatibility when AngelScript changes.
+		case asBC_RET:
 			Return(true);
 			break;
 		}
@@ -2127,15 +2143,17 @@ unsigned findTotalPushBatchSize(asDWORD* nextOp, asDWORD* endOfBytecode) {
 	}
 	return bytes;
 }
-void stdcall popStackIfNotEmpty(asIScriptContext* ctx) {
-	asCContext* context = (asCContext*)ctx;
-	if( context->callStack.GetLength() == 0) {
-		context->status = asEXECUTION_FINISHED;
-		return;
-	}
 
-	context->PopCallState();
-}
+//Only used for asBC_RET, which is no longer handled
+//void stdcall popStackIfNotEmpty(asIScriptContext* ctx) {
+//	asCContext* context = (asCContext*)ctx;
+//	if( context->m_callStack.GetLength() == 0 || context->m_callStack[context->m_callStack.GetLength() - CALLSTACK_FRAME_SIZE] == 0) {
+//		context->m_status = asEXECUTION_FINISHED;
+//		return;
+//	}
+//
+//	context->PopCallState();
+//}
 
 void stdcall allocScriptObject(asCObjectType* type, asCScriptFunction* constructor, asIScriptEngine* engine, asSVMRegisters* registers) {
 	//Allocate and prepare memory
@@ -2150,6 +2168,8 @@ void stdcall allocScriptObject(asCObjectType* type, asCScriptFunction* construct
 	//Push pointer so the constructor can be called
 	registers->stackPointer -= AS_PTR_SIZE;
 	*(void**)registers->stackPointer = mem;
+
+	registers->programPointer += 2 + AS_PTR_SIZE;
 
 	((asCContext*)registers->ctx)->CallScriptFunction(constructor);
 }
@@ -2194,7 +2214,7 @@ size_t stdcall callBoundFunction(asIScriptContext* ctx, unsigned short fid) {
 		return 1;
 	}
 	context->CallScriptFunction(engine->GetScriptFunction(funcID));
-	return context->status != asEXECUTION_ACTIVE;
+	return context->m_status != asEXECUTION_ACTIVE;
 }
 
 asCScriptObject* stdcall castObject(asCScriptObject* obj, asCObjectType* to) {
@@ -2211,13 +2231,13 @@ asCScriptObject* stdcall castObject(asCScriptObject* obj, asCObjectType* to) {
 bool stdcall doSuspend(asIScriptContext* ctx) {
 	asCContext* Ctx = (asCContext*)ctx;
 
-	if(Ctx->lineCallback)
+	if(Ctx->m_lineCallback)
 		Ctx->CallLineCallback();
 
-	if(Ctx->doSuspend) {
-		Ctx->regs.programPointer += 1;
-		if(Ctx->status == asEXECUTION_ACTIVE)
-			Ctx->status = asEXECUTION_SUSPENDED;
+	if(Ctx->m_doSuspend) {
+		Ctx->m_regs.programPointer += 1;
+		if(Ctx->m_status == asEXECUTION_ACTIVE)
+			Ctx->m_status = asEXECUTION_SUSPENDED;
 		return true;
 	}
 	else {
@@ -2287,7 +2307,7 @@ void SystemCall::call_entry(asSSystemFunctionInterface* func, asCScriptFunction*
 
 	if(!(flags & JIT_SYSCALL_NO_ERRORS)) {
 		pax = as<void*>(*pax + offsetof(asSVMRegisters,ctx));
-		pax += offsetof(asCContext,callingSystemFunction); //&callingSystemFunction
+		pax += offsetof(asCContext,m_callingSystemFunction); //&callingSystemFunction
 		as<void*>(*pax) = sFunc;
 
 		cpu.push(pax); cpu.stackDepth += cpu.pushSize();
@@ -2316,7 +2336,7 @@ void SystemCall::call_exit(asSSystemFunctionInterface* func) {
 		//Check if we should suspend
 		pax = as<void*>(*esp+cpu.stackDepth);
 		pax = as<void*>(*pax+offsetof(asSVMRegisters,ctx));
-		eax = as<int>(*pax+offsetof(asCContext,status));
+		eax = as<int>(*pax+offsetof(asCContext,m_status));
 		eax == (int)asEXECUTION_ACTIVE;
 		returnHandler(NotEqual);
 	}
@@ -2817,11 +2837,11 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 int stdcall sysExit(asSVMRegisters* registers) {
 	if(registers->doProcessSuspend) {
 		asCContext* context = (asCContext*)registers->ctx;
-		if(context->status != asEXECUTION_ACTIVE) {
+		if(context->m_status != asEXECUTION_ACTIVE) {
 			return 1;
 		}
-		else if(context->doSuspend) {
-			context->status = asEXECUTION_SUSPENDED;
+		else if(context->m_doSuspend) {
+			context->m_status = asEXECUTION_SUSPENDED;
 			return 1;
 		}
 	}
