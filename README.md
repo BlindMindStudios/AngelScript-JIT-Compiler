@@ -35,7 +35,7 @@ When including files into the project, choose one of "virtual_asm_windows.cpp" a
 
         //Create the JIT Compiler. The build flags are explained below,
         //as well as in as_jit.h
-        asCJitCompiler* jit = new asCJITCompiler(0);
+        asCJITCompiler* jit = new asCJITCompiler(0);
 
         //Enable JIT helper instructions; without these,
         //the JIT will not be invoked
