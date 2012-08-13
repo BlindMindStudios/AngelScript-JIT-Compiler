@@ -1,6 +1,6 @@
 #pragma once
 #include <stddef.h>
-
+#include <cstdarg> // va_list
 #include <stdio.h>
 
 namespace assembler {
