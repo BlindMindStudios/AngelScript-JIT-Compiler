@@ -1060,6 +1060,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			} break;
 		case asBC_CALLBND:
 			{
+				check_space(512);
 				pax = as<void*>(*esp+cpu.stackDepth);
 				as<void*>(*pax + offsetof(asSVMRegisters,programPointer)) = pOp+2;
 				as<void*>(*pax + offsetof(asSVMRegisters,stackPointer)) = esi;
@@ -1644,6 +1645,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		//asBC_SetV1 and asBC_SetV2 are aliased to asBC_SetV4
 		case asBC_Cast: //Can't handle casts (script call)
 			{
+				check_space(512);
 				pcx = as<void*>(*esi);
 				pcx &= pcx;
 				auto toEnd1 = cpu.prep_short_jump(Zero);
@@ -1652,7 +1654,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				auto toEnd2 = cpu.prep_short_jump(Zero);
 				
 				asCObjectType *to = ((asCScriptEngine*)function->GetEngine())->GetObjectTypeFromTypeId(asBC_DWORDARG(pOp));
-				cpu.call_stdcall((void*)castObject,"rc",&ecx,to);
+				cpu.call_stdcall((void*)castObject,"rc",&pcx,to);
 				pax &= pax;
 				auto toEnd3 = cpu.prep_short_jump(Zero);
 
