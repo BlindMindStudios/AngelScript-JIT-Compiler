@@ -150,16 +150,21 @@ void Processor::call_cdecl(void* func, const char* args, va_list ap) {
 			if(arg.reg) {
 				Register reg = *arg.reg;
 
+				bool isArgReg = false;
 				if(argCount > 1) {
 					if(reg.xmm()) {
-						for(unsigned i = 0; i < maxFloatArgs64(); ++i)
-							if(reg.code == floatArg64(i, i).code)
-								throw "Cannot use this register for cdecl call wrapper.";
+						for(unsigned i = 0; i < maxFloatArgs64(); ++i) {
+							if(reg.code == floatArg64(i, i).code) {
+								isArgReg = true;
+							}
+						}
 					}
 					else {
-						for(unsigned i = 0; i < maxIntArgs64(); ++i)
-							if(reg.code == intArg64(i, i).code)
-								throw "Cannot use this register for cdecl call wrapper.";
+						for(unsigned i = 0; i < maxIntArgs64(); ++i) {
+							if(reg.code == intArg64(i, i).code) {
+								isArgReg = true;
+							}
+						}
 					}
 				}
 
@@ -171,9 +176,14 @@ void Processor::call_cdecl(void* func, const char* args, va_list ap) {
 						Register other = floatArg64(floatA, a);
 						other.bitMode = reg.bitMode;
 
+						if(isArgReg && other.code != reg.code)
+							throw "Cannot use this register for cdecl call wrapper.";
+
 						other = reg;
 					}
 					else {
+						if(isArgReg)
+							throw "Cannot use this register for cdecl call wrapper.";
 						esp -= pushSize();
 						MemAddress adr = *esp;
 						adr.bitMode = reg.bitMode;
@@ -187,9 +197,14 @@ void Processor::call_cdecl(void* func, const char* args, va_list ap) {
 						Register other = intArg64(intA, a);
 						other.bitMode = reg.bitMode;
 
+						if(isArgReg && other.code != reg.code)
+							throw "Cannot use this register for cdecl call wrapper.";
+
 						other = reg;
 					}
 					else {
+						if(isArgReg)
+							throw "Cannot use this register for cdecl call wrapper.";
 						push(reg);
 					}
 					--intA;
@@ -1125,6 +1140,10 @@ void FloatingPointUnit::init() {
 
 void FloatingPointUnit::negate() {
 	cpu << '\xD9' << '\xE0';
+}
+
+void FloatingPointUnit::load_const_0() {
+	cpu << '\xD9' << '\xEE';
 }
 
 void FloatingPointUnit::load_const_1() {

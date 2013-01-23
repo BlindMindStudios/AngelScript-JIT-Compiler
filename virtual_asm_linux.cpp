@@ -68,6 +68,18 @@ Register Processor::floatArg64(unsigned char number, unsigned char arg) {
 	}
 }
 
+Register Processor::intArg64(unsigned char number, unsigned char arg, Register defaultReg) {
+	if(isIntArg64Register(number, arg))
+		return intArg64(number, arg);
+	return defaultReg;
+}
+
+Register Processor::floatArg64(unsigned char number, unsigned char arg, Register defaultReg) {
+	if(isFloatArg64Register(number, arg))
+		return floatArg64(number, arg);
+	return defaultReg;
+}
+
 Register Processor::intReturn64() {
 	return Register(*this, EAX);
 }

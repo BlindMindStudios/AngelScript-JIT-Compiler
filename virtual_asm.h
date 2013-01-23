@@ -1,6 +1,6 @@
 #pragma once
 #include <stddef.h>
-#include <cstdarg> // va_list
+
 #include <stdio.h>
 
 namespace assembler {
@@ -258,6 +258,8 @@ struct Processor {
 	void call_thiscall_prep(unsigned argBytes);
 	void call_thiscall_this(MemAddress address);
 	void call_thiscall_this(Register& reg);
+	void call_thiscall_this_mem(MemAddress address, Register& memreg);
+	void call_thiscall_this_mem(Register& reg, Register& memreg);
 	void call_thiscall_end(unsigned argBytes);
 
 	//Calls a function (push code pointer, jump to function)
@@ -281,6 +283,8 @@ struct Processor {
 	bool isFloatArg64Register(unsigned char number, unsigned char arg);
 	Register intArg64(unsigned char number, unsigned char arg);
 	Register floatArg64(unsigned char number, unsigned char arg);
+	Register intArg64(unsigned char number, unsigned char arg, Register defaultReg);
+	Register floatArg64(unsigned char number, unsigned char arg, Register defaultReg);
 	Register floatReturn64();
 	Register intReturn64();
 
@@ -330,12 +334,13 @@ struct FloatingPointUnit {
 	void negate();
 
 	//Pushes 
+	void load_const_0();
 	void load_const_1();
 
 	//FPU_1 becomes FPU_0 (Pops the fpu stack)
 	void pop();
 
-	//Compares FPU_0 to FPU_1, setting the CPU's flags according to the values' relation
+	//Compares FPU_0 to floatReg, setting the CPU's flags according to the values' relation
 	// Optionally pops the fpu stack
 	void compare_toCPU(FloatReg floatReg, bool pop = true);
 

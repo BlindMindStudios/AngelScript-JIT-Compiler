@@ -99,6 +99,16 @@ void Processor::call_thiscall_this(Register& reg) {
 #endif
 }
 
+void Processor::call_thiscall_this_mem(MemAddress address, Register& memreg) {
+	call_thiscall_this(address);
+	push(memreg);
+}
+
+void Processor::call_thiscall_this_mem(Register& reg, Register& memreg) {
+	call_thiscall_this(reg);
+	push(memreg);
+}
+
 void Processor::call_thiscall_end(unsigned argBytes) {
 #ifndef _MSC_VER
 	//THISCALL callers on GCC pops arguments and pointers
@@ -661,6 +671,10 @@ void Register::rightshift_logical(Register& other) {
 
 void Register::operator+=(unsigned int amount) {
 	if(amount == 0) return;
+	if(amount == 1) {
+		++*this;
+		return;
+	}
 
 	if(code == EAX)
 		cpu << '\x05' << amount;
@@ -681,6 +695,10 @@ void Register::operator+=(Register& other) {
 
 void Register::operator-=(unsigned int amount) {
 	if(amount == 0) return;
+	if(amount == 1) {
+		--*this;
+		return;
+	}
 
 	if(code == EAX)
 		cpu << '\x2D' << amount;
@@ -939,6 +957,10 @@ void FloatingPointUnit::init() {
 
 void FloatingPointUnit::negate() {
 	cpu << '\xD9' << '\xE0';
+}
+
+void FloatingPointUnit::load_const_0() {
+	cpu << '\xD9' << '\xEE';
 }
 
 void FloatingPointUnit::load_const_1() {
