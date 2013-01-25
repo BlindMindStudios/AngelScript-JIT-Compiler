@@ -83,200 +83,243 @@ unsigned Processor::pushSize() {
 }
 
 void Processor::call_cdecl_prep(unsigned argBytes) {
+	unsigned stackOffset = stackDepth % 16;
 	Register esp(*this, ESP, sizeof(void*) * 8);
-	Register r15(*this, R15, sizeof(void*) * 8);
-
-	//Align to 16 byte boundary
-	// Note: We already have cpu.stackDepth pushed, then we're pushing ebp to keep track of the stack
-	unsigned stackOffset = (stackDepth + pushSize()) % 16;
-
-	push(r15);
-	r15 = esp;
 	if(stackOffset != 0)
 		esp -= 16 - stackOffset;
 }
 
-void Processor::call_cdecl_end(unsigned argBytes) {
+void Processor::call_cdecl_end(unsigned argBytes, bool returnPointer) {
 	Register esp(*this, ESP, sizeof(void*) * 8);
-	Register r15(*this, R15, sizeof(void*) * 8);
-
-	esp = r15;
-	pop(r15);
+	unsigned stackOffset = stackDepth % 16;
+	if(stackOffset != 0)
+		argBytes += (16 - stackOffset);
+#ifndef _MSC_VER
+	if(returnPointer)
+		argBytes -= 4;
+#endif
+	if(argBytes != 0)
+		esp += argBytes;
 }
 
-void Processor::call_cdecl(void* func, const char* args, va_list ap) {
+unsigned Processor::call_cdecl_args(const char* args, va_list ap) {
+	return call_thiscall_args(0, args, ap);
+}
+
+unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list ap) {
 	std::stack<Argument> arg_stack;
 	Register esp(*this, ESP, sizeof(void*) * 8);
 
-	unsigned argCount = 0, floatCount = 0, intCount = 0, regCount = 0;
-	if(args && *args != '\0') {
-		//Read the arguments in...
-		while(*args != '\0') {
-			++argCount;
-			if(*args == 'r') {
-				Register* reg = va_arg(ap,Register*);
-				if(reg->xmm())
-					++floatCount;
-				else
-					++intCount;
-				++regCount;
-				arg_stack.push(reg);
+	unsigned argCount = 0, floatCount = 0, intCount = 0, regCount = 0, stackBytes = 0;
+
+	//Set the object as first argument
+#ifdef _MSC_VER
+	//TODO
+	if(obj)
+		throw "Implement this.";
+#else
+	if(obj) {
+		if(!isIntArg64Register(intCount, argCount))
+			stackBytes += pushSize();
+		++argCount;
+		++intCount;
+		arg_stack.push(obj);
+	}
+#endif
+
+	//Read the arguments in...
+	while(args && *args != '\0') {
+		if(*args == 'r') {
+			Register* reg = va_arg(ap,Register*);
+			if(reg->xmm()) {
+				if(!isFloatArg64Register(floatCount, argCount))
+					stackBytes += pushSize();
+				++floatCount;
 			}
-			else if(*args == 'm') {
-				MemAddress* adr = va_arg(ap,MemAddress*);
-				if(adr->Float)
-					++floatCount;
-				else
-					++intCount;
-				arg_stack.push(adr);
-			}
-			else if(*args == 'c') {
-				arg_stack.push(va_arg(ap,uint64_t));
+			else {
+				if(!isIntArg64Register(intCount, argCount))
+					stackBytes += pushSize();
 				++intCount;
 			}
-			else
-				throw 0;
-			++args;
+			++regCount;
+			arg_stack.push(reg);
 		}
+		else if(*args == 'm') {
+			MemAddress* adr = va_arg(ap,MemAddress*);
+			if(adr->Float) {
+				if(!isFloatArg64Register(floatCount, argCount))
+					stackBytes += pushSize();
+				++floatCount;
+			}
+			else {
+				if(!isIntArg64Register(intCount, argCount))
+					stackBytes += pushSize();
+				++intCount;
+			}
+			arg_stack.push(adr);
+		}
+		else if(*args == 'c') {
+			if(!isIntArg64Register(intCount, argCount))
+				stackBytes += pushSize();
+			arg_stack.push(va_arg(ap,uint64_t));
+			++intCount;
+		}
+		else
+			throw 0;
+		++argCount;
+		++args;
+	}
 
-		call_cdecl_prep(argCount * pushSize());
+	call_cdecl_prep(stackBytes);
 
-		unsigned intA = intCount - 1, floatA = floatCount - 1, a = argCount - 1;
+	unsigned intA = intCount - 1, floatA = floatCount - 1, a = argCount - 1;
 
-		//Then push them in reverse order
-		while(!arg_stack.empty()) {
-			auto& arg = arg_stack.top();
+	//Then push them in reverse order
+	while(!arg_stack.empty()) {
+		auto& arg = arg_stack.top();
 
-			if(arg.reg) {
-				Register reg = *arg.reg;
+		if(arg.reg) {
+			Register reg = *arg.reg;
 
-				bool isArgReg = false;
-				if(argCount > 1) {
-					if(reg.xmm()) {
-						for(unsigned i = 0; i < maxFloatArgs64(); ++i) {
-							if(reg.code == floatArg64(i, i).code) {
-								isArgReg = true;
-							}
-						}
-					}
-					else {
-						for(unsigned i = 0; i < maxIntArgs64(); ++i) {
-							if(reg.code == intArg64(i, i).code) {
-								isArgReg = true;
-							}
-						}
-					}
-				}
-
-				if(reg.code == ESP || reg.code == R15)
-					throw "Cannot use this register for cdecl call wrapper.";
-
+			bool isArgReg = false;
+			if(argCount > 1) {
 				if(reg.xmm()) {
-					if(isFloatArg64Register(floatA, a)) {
-						Register other = floatArg64(floatA, a);
-						other.bitMode = reg.bitMode;
-
-						if(isArgReg && other.code != reg.code)
-							throw "Cannot use this register for cdecl call wrapper.";
-
-						other = reg;
+					for(unsigned i = 0; i < maxFloatArgs64(); ++i) {
+						if(reg.code == floatArg64(i, i).code) {
+							isArgReg = true;
+						}
 					}
-					else {
-						if(isArgReg)
-							throw "Cannot use this register for cdecl call wrapper.";
-						esp -= pushSize();
-						MemAddress adr = *esp;
-						adr.bitMode = reg.bitMode;
-
-						adr = reg;
-					}
-					--floatA;
 				}
 				else {
-					if(isIntArg64Register(intA, a)) {
-						Register other = intArg64(intA, a);
-						other.bitMode = reg.bitMode;
-
-						if(isArgReg && other.code != reg.code)
-							throw "Cannot use this register for cdecl call wrapper.";
-
-						other = reg;
+					for(unsigned i = 0; i < maxIntArgs64(); ++i) {
+						if(reg.code == intArg64(i, i).code) {
+							isArgReg = true;
+						}
 					}
-					else {
-						if(isArgReg)
-							throw "Cannot use this register for cdecl call wrapper.";
-						push(reg);
-					}
-					--intA;
 				}
 			}
-			else if(arg.mem) {
-				MemAddress addr = *arg.mem;
 
-				if(argCount > 1) {
-					for(unsigned i = 0; i < maxIntArgs64(); ++i) {
-						if(addr.code == intArg64(i, i).code)
-							throw "Cannot use this register for cdecl call wrapper address.";
-						if(addr.other == intArg64(i, i).code)
-							throw "Cannot use this register for cdecl call wrapper address.";
-						if(addr.scaleFactor != 0 && addr.scaleReg == intArg64(i, i).code)
-							throw "Cannot use this register for cdecl call wrapper address.";
-					}
-				}
-				if(addr.code == R15 || addr.other == R15 || (addr.scaleFactor != 0 && addr.scaleReg == R15))
-					throw "Cannot use this register for cdecl call wrapper address.";
-				if(addr.other == ESP)
-					throw "Cannot use this register for cdecl call wrapper address.";
-				if(addr.code == ESP) {
-					addr.code = R15;
-					addr.offset += pushSize();
-				}
+			if(reg.code == ESP || reg.code == R15)
+				throw "Cannot use this register for cdecl call wrapper.";
 
-				if(addr.Float) {
-					if(isFloatArg64Register(floatA, a)) {
-						Register reg = floatArg64(floatA, a);
-						reg.bitMode = addr.bitMode;
+			if(reg.xmm()) {
+				if(isFloatArg64Register(floatA, a)) {
+					Register other = floatArg64(floatA, a);
+					other.bitMode = reg.bitMode;
 
-						reg = addr;
-					}
-					else {
-						push(addr);
-					}
-					--floatA;
+					if(isArgReg && other.code != reg.code)
+						throw "Cannot use this register for cdecl call wrapper.";
+
+					other = reg;
 				}
 				else {
-					if(isIntArg64Register(intA, a)) {
-						Register reg = intArg64(intA, a);
-						reg.bitMode = addr.bitMode;
+					if(isArgReg)
+						throw "Cannot use this register for cdecl call wrapper.";
+					esp -= pushSize();
+					MemAddress adr = *esp;
+					adr.bitMode = reg.bitMode;
 
-						reg = addr;
-					}
-					else {
-						push(addr);
-					}
-					--intA;
+					adr = reg;
 				}
+				--floatA;
+			}
+			else {
+				if(isIntArg64Register(intA, a)) {
+					Register other = intArg64(intA, a);
+					other.bitMode = reg.bitMode;
+
+					if(isArgReg && other.code != reg.code)
+						throw "Cannot use this register for cdecl call wrapper.";
+
+					other = reg;
+				}
+				else {
+					if(isArgReg)
+						throw "Cannot use this register for cdecl call wrapper.";
+					push(reg);
+				}
+				--intA;
+			}
+		}
+		else if(arg.mem) {
+			MemAddress addr = *arg.mem;
+
+			if(argCount > 1) {
+				for(unsigned i = 0; i < maxIntArgs64(); ++i) {
+					if(addr.code == intArg64(i, i).code)
+						throw "Cannot use this register for cdecl call wrapper address.";
+					if(addr.other == intArg64(i, i).code)
+						throw "Cannot use this register for cdecl call wrapper address.";
+					if(addr.scaleFactor != 0 && addr.scaleReg == intArg64(i, i).code)
+						throw "Cannot use this register for cdecl call wrapper address.";
+				}
+			}
+			if(addr.code == R15 || addr.other == R15 || (addr.scaleFactor != 0 && addr.scaleReg == R15))
+				throw "Cannot use this register for cdecl call wrapper address.";
+			if(addr.other == ESP)
+				throw "Cannot use this register for cdecl call wrapper address.";
+			if(addr.code == ESP) {
+				addr.code = R15;
+				addr.offset += pushSize();
+			}
+
+			if(addr.Float) {
+				if(isFloatArg64Register(floatA, a)) {
+					Register reg = floatArg64(floatA, a);
+					reg.bitMode = addr.bitMode;
+
+					reg = addr;
+				}
+				else {
+					push(addr);
+				}
+				--floatA;
 			}
 			else {
 				if(isIntArg64Register(intA, a)) {
 					Register reg = intArg64(intA, a);
-					reg.bitMode = 64;
+					reg.bitMode = addr.bitMode;
 
-					reg = arg.constant;
+					reg = addr;
 				}
 				else {
-					push(arg.constant);
+					push(addr);
 				}
 				--intA;
 			}
-				
-
-			arg_stack.pop();
-			--a;
 		}
+		else {
+			if(isIntArg64Register(intA, a)) {
+				Register reg = intArg64(intA, a);
+				reg.bitMode = 64;
+
+				reg = arg.constant;
+			}
+			else {
+				push(arg.constant);
+			}
+			--intA;
+		}
+			
+
+		arg_stack.pop();
+		--a;
 	}
+	return stackBytes;
+}
+
+void Processor::call_cdecl(void* func, const char* args, va_list ap) {
+	unsigned stackBytes = call_cdecl_args(args, ap);
 	call(func);
-	call_cdecl_end(argCount * 4);
+	call_cdecl_end(stackBytes);
+}
+
+unsigned Processor::call_cdecl_args(const char* args, ...) {
+	va_list ap;
+	va_start(ap, args);
+		unsigned r = call_cdecl_args(args, ap);
+	va_end(ap);
+	return r;
 }
 
 void Processor::call_cdecl(void* func, const char* args, ...) {
@@ -284,6 +327,14 @@ void Processor::call_cdecl(void* func, const char* args, ...) {
 	va_start(ap, args);
 		call_cdecl(func, args, ap);
 	va_end(ap);
+}
+
+unsigned Processor::call_thiscall_args(Register* obj, const char* args, ...) {
+	va_list ap;
+	va_start(ap, args);
+		unsigned r = call_thiscall_args(obj, args, ap);
+	va_end(ap);
+	return r;
 }
 
 void Processor::call_stdcall(void* func, const char* args, ...) {
@@ -469,7 +520,7 @@ void Processor::call(void* func) {
 		*this << '\x49' << '\xFF' << mod_rm(EX_2,REG,R11 % 8);
 	}
 	else {
-		*this << '\xE8' << offset;
+		*this << '\xE8' << (int)offset;
 	}
 }
 
@@ -526,6 +577,10 @@ void Processor::jump(Register& reg) {
 
 void Processor::ret() {
 	*this << '\xC3';
+}
+
+void Processor::debug_interrupt() {
+	*this << '\xCC';
 }
 
 MemAddress::MemAddress(Processor& CPU, void* address)
@@ -1009,6 +1064,29 @@ void Register::operator=(unsigned long long value) {
 	case 64:
 		cpu << prefix() << (byte)('\xB8'+(code % 8)) << value; break;
 	}
+}
+
+void* Register::setDeferred(unsigned long long value) {
+	void* ptr = 0;
+	switch(getBitMode()) {
+	case 8:
+		cpu << prefix() << (byte)('\xB0'+(code % 8)); 
+		ptr = (void*)cpu.op;
+		cpu << (byte)value; break;
+	case 16:
+		cpu << '\x66' << prefix() << (byte)('\xB8'+(code % 8));
+		ptr = (void*)cpu.op;
+		cpu << (unsigned short)value; break;
+	case 32:
+		cpu << prefix() << (byte)('\xB8'+(code % 8));
+		ptr = (void*)cpu.op;
+		cpu << (unsigned int)value; break;
+	case 64:
+		cpu << prefix() << (byte)('\xB8'+(code % 8));
+		ptr = (void*)cpu.op;
+		cpu << value; break;
+	}
+	return ptr;
 }
 
 void Register::operator=(Register other) {

@@ -18,6 +18,9 @@ enum JITSettings {
 	JIT_ALLOC_SIMPLE = 0x08,
 	//Fall back to AngelScript to perform switch logic? (Slower, but uses less memory)
 	JIT_NO_SWITCHES = 0x10,
+	//Fall back to AngelScript to perform script calls
+	// Slower, but can be used as a temporary workaround for angelscript changes
+	JIT_NO_SCRIPT_CALLS = 0x20,
 };
 
 class asCJITCompiler : public asIJITCompiler {
@@ -25,6 +28,12 @@ class asCJITCompiler : public asIJITCompiler {
 	assembler::CodePage* activePage;
 	std::multimap<asJITFunction,assembler::CodePage*> pages;
 	std::map<asJITFunction,unsigned char**> jumpTables;
+
+	struct DeferredCodePointer {
+		void** jitFunction;
+		void** jitEntry;
+	};
+	std::multimap<asIScriptFunction*,DeferredCodePointer> deferredPointers;
 public:
 	asCJITCompiler(unsigned Flags = 0);
 	int CompileFunction(asIScriptFunction *function, asJITFunction *output);

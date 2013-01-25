@@ -234,13 +234,19 @@ struct Processor {
 	void call_cdecl(void* func, const char* args, va_list ap);
 	void call_cdecl(void* func, const char* args, ...);
 
+	//Use call() in between these to set up a call with an arbitrary function
+	unsigned call_cdecl_args(const char* args, ...);
+	unsigned call_cdecl_args(const char* args, va_list ap);
+	unsigned call_thiscall_args(Register* obj, const char* args, ...);
+	unsigned call_thiscall_args(Register* obj, const char* args, va_list ap);
+
 	//Prepares for a call to manual call to a cdecl function (Do not use with call_cdecl)
 	// Use before pushing arguments
 	// Invalidates EBP until call_cdecl_end()
 	void call_cdecl_prep(unsigned argBytes);
 	//Ends a manual call to a cdecl function (Do not use with call_cdecl)
 	// Use after returning from the function
-	void call_cdecl_end(unsigned argBytes);
+	void call_cdecl_end(unsigned argBytes, bool returnPointer = false);
 
 	//Note: stdcall is like cdecl, but does not use cdecl_end
 
@@ -260,7 +266,7 @@ struct Processor {
 	void call_thiscall_this(Register& reg);
 	void call_thiscall_this_mem(MemAddress address, Register& memreg);
 	void call_thiscall_this_mem(Register& reg, Register& memreg);
-	void call_thiscall_end(unsigned argBytes);
+	void call_thiscall_end(unsigned argBytes, bool returnPointer = false);
 
 	//Calls a function (push code pointer, jump to function)
 	void call(Register& reg);
@@ -519,6 +525,7 @@ struct Register {
 	void operator==(unsigned int test);
 
 	void setIf(JumpType condition);
+	void* setDeferred(unsigned long long def = 0);
 
 	bool xmm();
 	bool extended();

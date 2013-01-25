@@ -90,3 +90,7 @@ When using simple allocation (e.g. default new/delete or malloc/free) that does 
 *JIT_NO_SWITCHES*
 
 Disables native switch statements in the JIT. Native switches currently use a rather large amount of memory; disable this option for a smaller, but slower, output.
+
+*JIT_NO_SCRIPT_CALLS*
+
+Disables native script calls in the JIT. Native script calls are slightly faster, but may break on angelscript updates; disable this as a temporary workaround if they do.

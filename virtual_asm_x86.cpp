@@ -109,75 +109,106 @@ void Processor::call_thiscall_this_mem(Register& reg, Register& memreg) {
 	push(memreg);
 }
 
-void Processor::call_thiscall_end(unsigned argBytes) {
+void Processor::call_thiscall_end(unsigned argBytes, bool returnPointer) {
 #ifndef _MSC_VER
 	//THISCALL callers on GCC pops arguments and pointers
-	call_cdecl_end(argBytes + 4);
+	call_cdecl_end(argBytes + 4, returnPointer);
 #endif
 }
 
 void Processor::call_cdecl_prep(unsigned argBytes) {
 #ifndef _MSC_VER
 	//Align to 16 byte boundary if not on MSVC
-	// Note: We already have cpu.stackDepth pushed, then we're pushing ebp to keep track of the stack
-	unsigned stackOffset = (stackDepth + pushSize()) % 16;
+	unsigned stackOffset = stackDepth % 16;
 
-	Register esp(*this, ESP), ebp(*this, EBP);
-	push(ebp);
-	ebp = esp;
+	Register esp(*this, ESP);
 	if(stackOffset != 0)
 		esp -= 16 - stackOffset;
 #endif
 }
 
-void Processor::call_cdecl_end(unsigned argBytes) {
+void Processor::call_cdecl_end(unsigned argBytes, bool returnPointer) {
 	Register esp(*this, ESP);
 #ifdef _MSC_VER
 	esp += argBytes;
 #else
-	Register ebp(*this, EBP);
-	esp = ebp;
-	pop(ebp);
+	unsigned stackOffset = stackDepth % 16;
+	if(returnPointer)
+		argBytes -= 4;
+	if(stackOffset != 0)
+		argBytes += (16 - stackOffset);
+	if(argBytes != 0)
+		esp += argBytes;
 #endif
 }
 
-void Processor::call_cdecl(void* func, const char* args, ...) {
+unsigned Processor::call_cdecl_args(const char* args, va_list ap) {
+	return call_thiscall_args(0, args, ap);
+}
+
+unsigned Processor::call_cdecl_args(const char* args, ...) {
+	va_list ap;
+	va_start(ap, args);
+		unsigned r = call_cdecl_args(args, ap);
+	va_end(ap);
+	return r;
+}
+
+unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list ap) {
 	std::stack<Argument> arg_stack;
 
 	unsigned argCount = 0;
-	if(args && *args != '\0') {
-		//Read the arguments in...
-		va_list list; va_start(list,args);
-		while(*args != '\0') {
-			++argCount;
-			if(*args == 'r')
-				arg_stack.push(va_arg(list,Register*));
-			else if(*args == 'm')
-				arg_stack.push(va_arg(list,MemAddress*));
-			else if(*args == 'c')
-				arg_stack.push(va_arg(list,unsigned int));
-			else
-				throw 0;
-			++args;
-		}
-		va_end(list);
-
-		call_cdecl_prep(argCount * 4);
-
-		//Then push them in reverse order
-		while(!arg_stack.empty()) {
-			auto& arg = arg_stack.top();
-			if(arg.reg)
-				push(*arg.reg);
-			else if(arg.mem)
-				push(*arg.mem);
-			else
-				push(arg.constant);
-			arg_stack.pop();
-		}
+#ifdef _MSC_VER
+	//TODO
+	if(obj)
+		throw "Implement this.";
+#else
+	if(obj) {
+		arg_stack.push(obj);
+		++argCount;
 	}
+#endif
+	//Read the arguments in...
+	while(args, *args != '\0') {
+		++argCount;
+		if(*args == 'r')
+			arg_stack.push(va_arg(ap,Register*));
+		else if(*args == 'm')
+			arg_stack.push(va_arg(ap,MemAddress*));
+		else if(*args == 'c')
+			arg_stack.push(va_arg(ap,unsigned int));
+		else
+			throw 0;
+		++args;
+	}
+
+	call_cdecl_prep(argCount * 4);
+
+	//Then push them in reverse order
+	while(!arg_stack.empty()) {
+		auto& arg = arg_stack.top();
+		if(arg.reg)
+			push(*arg.reg);
+		else if(arg.mem)
+			push(*arg.mem);
+		else
+			push(arg.constant);
+		arg_stack.pop();
+	}
+	return argCount * 4;
+}
+
+void Processor::call_cdecl(void* func, const char* args, va_list ap) {
+	unsigned stackBytes = call_cdecl_args(args, ap);
 	call(func);
-	call_cdecl_end(argCount * 4);
+	call_cdecl_end(stackBytes);
+}
+
+void Processor::call_cdecl(void* func, const char* args, ...) {
+	va_list ap;
+	va_start(ap, args);
+		call_cdecl(func, args, ap);
+	va_end(ap);
 }
 
 //STDCALL is similar to CDECL, but we don't need the call preperation or end
@@ -853,6 +884,27 @@ void Register::operator=(unsigned long long value) {
 	case 64:
 		throw 0;
 	}
+}
+
+void* Register::setDeferred(unsigned long long value) {
+	void* ptr = 0;
+	switch(getBitMode()) {
+	case 8:
+		cpu << (byte)('\xB0'+code);
+		ptr = (void*)cpu.op;
+		cpu << (byte)value; break;
+	case 16:
+		cpu << '\x66' << (byte)('\xB8'+code);
+		ptr = (void*)cpu.op;
+		cpu << (unsigned short)value; break;
+	case 32:
+		cpu << (byte)('\xB8'+code);
+		ptr = (void*)cpu.op;
+		cpu << (unsigned int)value; break;
+	case 64:
+		throw 0;
+	}
+	return ptr;
 }
 
 void Register::operator=(Register other) {
