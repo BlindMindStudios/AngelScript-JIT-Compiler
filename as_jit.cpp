@@ -77,8 +77,6 @@ short offset(asDWORD* op, unsigned n) {
 
 //Wrappers so we can deal with complex pointers/calling conventions
 
-//void stdcall popStackIfNotEmpty(asIScriptContext* ctx); //No longer used (was used in asBC_RET)
-
 void stdcall allocScriptObject(asCObjectType* type, asCScriptFunction* constructor, asIScriptEngine* engine, asSVMRegisters* registers);
 
 void* stdcall engineAlloc(asCScriptEngine* engine, asCObjectType* type);
@@ -95,7 +93,7 @@ void stdcall callScriptFunction(asIScriptContext* ctx, asCScriptFunction* func);
 
 asCScriptFunction* stdcall callInterfaceMethod(asIScriptContext* ctx, asCScriptFunction* func);
 
-size_t stdcall callBoundFunction(asIScriptContext* ctx, unsigned short fid);
+asCScriptFunction* stdcall callBoundFunction(asIScriptContext* ctx, unsigned short fid);
 
 void stdcall receiveAutoObjectHandle(asIScriptContext* ctx, asCScriptObject* obj);
 
@@ -461,7 +459,8 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		cpu.call_cdecl_end(sb);
 	};
 
-	auto JitScriptCallIntf = [&](asCScriptFunction* func) {
+	auto DynamicJitScriptCall = [&]() {
+		//Expects the asCScriptFunction* to be in eax
 #ifdef JIT_64
 		Register arg0 = as<void*>(cpu.intArg64(0, 0));
 		Register arg1 = as<void*>(cpu.intArg64(1, 1));
@@ -471,12 +470,6 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		Register arg1 = ebx;
 		Register ptr = pax;
 #endif
-		arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
-
-		//Prepare the vm state
-		cpu.call_stdcall((void*)callInterfaceMethod,"rc", &arg0, func);
-		//This returns the asCScriptFunction* in pax
-
 		arg0 = as<void*>(ebp);
 
 		//Read the first pointer from where byteCode is, which is the
@@ -493,14 +486,48 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		cpu.call_cdecl_end(sb);
 	};
 
-	auto ReturnFromJittedScriptCall = [&]() {
+	auto JitScriptCallIntf = [&](asCScriptFunction* func) {
+#ifdef JIT_64
+		Register arg0 = as<void*>(cpu.intArg64(0, 0));
+#else
+		Register arg0 = ecx;
+#endif
+		arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
+
+		//Prepare the vm state
+		cpu.call_stdcall((void*)callInterfaceMethod,"rc", &arg0, func);
+		//This returns the asCScriptFunction* in pax
+
+		DynamicJitScriptCall();
+	};
+
+	auto JitScriptCallBnd = [&](int fid) {
+#ifdef JIT_64
+		Register arg0 = as<void*>(cpu.intArg64(0, 0));
+#else
+		Register arg0 = ecx;
+#endif
+		arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
+
+		//Prepare the vm state
+		cpu.call_stdcall((void*)callBoundFunction,"rc", &arg0, (unsigned)fid);
+		//This returns the asCScriptFunction* in pax
+
+		pax &= pax;
+		auto okay = cpu.prep_short_jump(NotZero);
+		Return(false);
+		cpu.end_short_jump(okay);
+
+		DynamicJitScriptCall();
+	};
+
+	auto ReturnFromJittedScriptCall = [&](void* expectedPC) {
 		//Check if we need to return to the vm
 		// If the program pointer is what we expect, we don't need to return
-		pcx = (void*)(pOp+2);
+		pcx = (void*)(expectedPC == 0 ? pOp+2 : expectedPC);
 		pcx == as<void*>(*ebp + offsetof(asSVMRegisters,programPointer));
 
 		auto skip_ret = cpu.prep_short_jump(Equal);
-		//cpu.debug_interrupt();
 		ReturnFromScriptCall();
 		cpu.end_short_jump(skip_ret);
 
@@ -510,7 +537,6 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		as<asEContextState>(ecx) == as<asEContextState>(*pax + offsetof(asCContext, m_status));
 
 		auto skip_finish = cpu.prep_short_jump(NotEqual);
-		//cpu.debug_interrupt();
 		ReturnFromScriptCall();
 		cpu.end_short_jump(skip_finish);
 
@@ -940,7 +966,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(asBC_INTARG(pOp));
 				if(PrepareJitScriptCall(func)) {
 					JitScriptCall(func);
-					ReturnFromJittedScriptCall();
+					ReturnFromJittedScriptCall(0);
 				}
 				else {
 					ReturnFromScriptCall();
@@ -949,10 +975,10 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_RET: {
 				//Not implemented if script call jitting is off,
 				//since it's dependent on how calls are made
-			   if(flags & JIT_NO_SCRIPT_CALLS) {
-				   Return(true);
-				   break;
-			   }
+				if(flags & JIT_NO_SCRIPT_CALLS) {
+					Return(true);
+					break;
+				}
 #ifdef JIT_64
 				Register arg0 = cpu.intArg64(0, 0, pax);
 #else
@@ -1275,21 +1301,28 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				check_space(512);
 				as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp+2;
 				as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
-#ifdef JIT_64
-				Register arg0 = as<void*>(cpu.intArg64(0, 0, pax));
-#else
-				Register arg0 = pax;
-#endif
-				arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
 
-				cpu.call_stdcall((void*)callBoundFunction,"rc",
-					&arg0,
-					(unsigned int)asBC_INTARG(pOp));
-				pax &= pax;
-				auto p2 = cpu.prep_short_jump(Zero);
-				Return(false);
-				cpu.end_short_jump(p2);
-				ReturnFromScriptCall();
+				if(flags & JIT_NO_SCRIPT_CALLS) {
+#ifdef JIT_64
+					Register arg0 = as<void*>(cpu.intArg64(0, 0, pax));
+#else
+					Register arg0 = pax;
+#endif
+					arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
+
+					cpu.call_stdcall((void*)callBoundFunction,"rc",
+						&arg0,
+						(unsigned int)asBC_INTARG(pOp));
+					pax &= pax;
+					auto p2 = cpu.prep_short_jump(NotZero);
+					Return(false);
+					cpu.end_short_jump(p2);
+					ReturnFromScriptCall();
+				}
+				else {
+					JitScriptCallBnd(asBC_INTARG(pOp));
+					ReturnFromJittedScriptCall(0);
+				}
 			} break;
 		case asBC_SUSPEND:
 			if(flags & JIT_NO_SUSPEND) {
@@ -1338,7 +1371,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 					if(PrepareJitScriptCall(f)) {
 						JitScriptCall(f);
-						ReturnFromJittedScriptCall();
+						ReturnFromJittedScriptCall((void*)(pOp+(2+AS_PTR_SIZE)));
 					}
 					else {
 						ReturnFromScriptCall();
@@ -1900,7 +1933,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				}
 				else {
 					JitScriptCallIntf(func);
-					ReturnFromJittedScriptCall();
+					ReturnFromJittedScriptCall(0);
 				}
 			} break;
 		//asBC_SetV1 and asBC_SetV2 are aliased to asBC_SetV4
@@ -2491,17 +2524,6 @@ unsigned findTotalPushBatchSize(asDWORD* nextOp, asDWORD* endOfBytecode) {
 	return bytes;
 }
 
-//Only used for asBC_RET, which is no longer handled
-//void stdcall popStackIfNotEmpty(asIScriptContext* ctx) {
-//	asCContext* context = (asCContext*)ctx;
-//	if( context->m_callStack.GetLength() == 0 || context->m_callStack[context->m_callStack.GetLength() - CALLSTACK_FRAME_SIZE] == 0) {
-//		context->m_status = asEXECUTION_FINISHED;
-//		return;
-//	}
-//
-//	context->PopCallState();
-//}
-
 void stdcall allocScriptObject(asCObjectType* type, asCScriptFunction* constructor, asIScriptEngine* engine, asSVMRegisters* registers) {
 	//Allocate and prepare memory
 	void* mem = ((asCScriptEngine*)engine)->CallAlloc(type);
@@ -2553,16 +2575,19 @@ asCScriptFunction* stdcall callInterfaceMethod(asIScriptContext* ctx, asCScriptF
 	return context->m_currentFunction;
 }
 
-size_t stdcall callBoundFunction(asIScriptContext* ctx, unsigned short fid) {
+asCScriptFunction* stdcall callBoundFunction(asIScriptContext* ctx, unsigned short fid) {
 	asCContext* context = (asCContext*)ctx;
 	asCScriptEngine* engine = (asCScriptEngine*)context->GetEngine();
 	int funcID = engine->importedFunctions[fid]->boundFunctionId;
 	if(funcID == -1) {
 		context->SetInternalException(TXT_UNBOUND_FUNCTION);
-		return 1;
+		return 0;
 	}
-	context->CallScriptFunction(engine->GetScriptFunction(funcID));
-	return context->m_status != asEXECUTION_ACTIVE;
+	asCScriptFunction* func = engine->GetScriptFunction(funcID);
+	context->CallScriptFunction(func);
+	if(context->m_status != asEXECUTION_ACTIVE)
+		return 0;
+	return func;
 }
 
 void stdcall receiveObjectHandle(asIScriptContext* ctx, asCScriptObject* obj) {
