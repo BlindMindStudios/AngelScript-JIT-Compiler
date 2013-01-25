@@ -1897,7 +1897,6 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 					cpu.call_stdcall((void*)callInterfaceMethod,"mc", &ctxPtr, func);
 					ReturnFromScriptCall();
-					cpu.debug_interrupt();
 				}
 				else {
 					JitScriptCallIntf(func);
@@ -2710,22 +2709,45 @@ void SystemCall::call_error() {
 }
 
 void SystemCall::call_exit(asSSystemFunctionInterface* func) {
-	Register eax(cpu,EAX), esp(cpu,ESP), ebp(cpu,EBP), cl(cpu,ECX,8);
+	Register eax(cpu,EAX), edx(cpu,EDX), esp(cpu,ESP), ebp(cpu,EBP), cl(cpu,ECX,8);
 	Register pax(cpu,EAX,sizeof(void*)*8);
 
 	
-	if(!(flags & JIT_SYSCALL_NO_ERRORS)) {
+	if((flags & JIT_SYSCALL_NO_ERRORS) == 0) {
 		//Clear IsSystem*
 		pax = as<void*>(*esp + local::pIsSystem);
 		as<void*>(*pax) = (void*)0;
 	}
+
+	bool checkSuspend = (flags & (JIT_SYSCALL_NO_ERRORS|JIT_NO_SUSPEND)) == 0;
+
+	if(checkSuspend) {
+		cl = as<bool>(*ebp+offsetof(asSVMRegisters,doProcessSuspend));
+		cl &= cl;
+		auto* dontSuspend = cpu.prep_short_jump(Zero);
+					
+			pax = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
+
+			if((flags & JIT_SYSCALL_NO_ERRORS) == 0) {
+				edx = as<int>(*pax+offsetof(asCContext,m_status));
+				edx == (int)asEXECUTION_ACTIVE;
+				auto* activeContext = cpu.prep_short_jump(Equal);
+				returnHandler(Jump);
+				cpu.end_short_jump(activeContext);
+			}
+
+			if((flags & JIT_NO_SUSPEND) == 0) {
+				cl = as<bool>(*pax+offsetof(asCContext,m_doSuspend));
+				cl &= cl;
+				auto* noSuspend = cpu.prep_short_jump(Zero);
+
+				as<int>(*pax+offsetof(asCContext,m_status)) = (int)asEXECUTION_SUSPENDED;
+				returnHandler(Jump);
+
+				cpu.end_short_jump(noSuspend);
+			}
 			
-	if(!(flags & JIT_SYSCALL_NO_ERRORS)) {
-		//Check if we should suspend
-		pax = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
-		eax = as<int>(*pax+offsetof(asCContext,m_status));
-		eax == (int)asEXECUTION_ACTIVE;
-		returnHandler(NotEqual);
+		cpu.end_short_jump(dontSuspend);
 	}
 }
 
