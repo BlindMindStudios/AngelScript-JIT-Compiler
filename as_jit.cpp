@@ -2744,13 +2744,11 @@ void SystemCall::call_exit(asSSystemFunctionInterface* func) {
 		as<void*>(*pax) = (void*)0;
 	}
 
-	bool checkSuspend = (flags & (JIT_SYSCALL_NO_ERRORS|JIT_NO_SUSPEND)) == 0;
-
-	if(checkSuspend) {
+	if((flags & JIT_SYSCALL_NO_ERRORS) || (flags & JIT_NO_SUSPEND)) {
 		cl = as<bool>(*ebp+offsetof(asSVMRegisters,doProcessSuspend));
 		cl &= cl;
 		auto* dontSuspend = cpu.prep_short_jump(Zero);
-					
+			
 			pax = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
 
 			if((flags & JIT_SYSCALL_NO_ERRORS) == 0) {
