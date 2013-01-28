@@ -83,7 +83,7 @@ unsigned Processor::pushSize() {
 }
 
 void Processor::call_cdecl_prep(unsigned argBytes) {
-	unsigned stackOffset = stackDepth % 16;
+	unsigned stackOffset = (stackDepth + argBytes) % 16;
 	Register esp(*this, ESP, sizeof(void*) * 8);
 	if(stackOffset != 0)
 		esp -= 16 - stackOffset;
@@ -91,7 +91,7 @@ void Processor::call_cdecl_prep(unsigned argBytes) {
 
 void Processor::call_cdecl_end(unsigned argBytes, bool returnPointer) {
 	Register esp(*this, ESP, sizeof(void*) * 8);
-	unsigned stackOffset = stackDepth % 16;
+	unsigned stackOffset = (stackDepth + argBytes) % 16;
 	if(stackOffset != 0)
 		argBytes += (16 - stackOffset);
 #ifndef _MSC_VER

@@ -50,25 +50,14 @@ const unsigned codePageSize = 100000;
 
 //#define JIT_DEBUG
 #ifdef JIT_DEBUG
-#ifdef _MSC_VER
-static __declspec(thread) asEBCInstr DBG_CurrentOP;
-static __declspec(thread) asEBCInstr DBG_LastOP;
-static __declspec(thread) void* DBG_Entry = 0;
-static __declspec(thread) void* DBG_Instr = 0;
-static __declspec(thread) void* DBG_LastCall = 0;
-static __declspec(thread) void* DBG_LastInstr = 0;
-static __declspec(thread) void* DBG_FuncEntry = 0;
-static __declspec(thread) asCScriptFunction* DBG_CurrentFunction;
-#else
-static __thread asEBCInstr DBG_CurrentOP;
-static __thread asEBCInstr DBG_LastOP;
-static __thread void* DBG_Entry = 0;
-static __thread void* DBG_Instr = 0;
-static __thread void* DBG_LastInstr = 0;
-static __thread void* DBG_LastCall = 0;
-static __thread void* DBG_FuncEntry = 0;
-static __thread asCScriptFunction* DBG_CurrentFunction;
-#endif
+static asEBCInstr DBG_CurrentOP;
+static asEBCInstr DBG_LastOP;
+static void* DBG_Entry = 0;
+static void* DBG_Instr = 0;
+static void* DBG_LastInstr = 0;
+static void* DBG_LastCall = 0;
+static void* DBG_FuncEntry = 0;
+static asCScriptFunction* DBG_CurrentFunction;
 #endif
 
 short offset(asDWORD* op, unsigned n) {
@@ -1293,7 +1282,6 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			{
 				check_space(512);
 				asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(asBC_INTARG(pOp));
-
 				sysCall.callSystemFunction(func);
 			} break;
 		case asBC_CALLBND:

@@ -119,7 +119,7 @@ void Processor::call_thiscall_end(unsigned argBytes, bool returnPointer) {
 void Processor::call_cdecl_prep(unsigned argBytes) {
 #ifndef _MSC_VER
 	//Align to 16 byte boundary if not on MSVC
-	unsigned stackOffset = stackDepth % 16;
+	unsigned stackOffset = (stackDepth + argBytes) % 16;
 
 	Register esp(*this, ESP);
 	if(stackOffset != 0)
@@ -132,7 +132,7 @@ void Processor::call_cdecl_end(unsigned argBytes, bool returnPointer) {
 #ifdef _MSC_VER
 	esp += argBytes;
 #else
-	unsigned stackOffset = stackDepth % 16;
+	unsigned stackOffset = (stackDepth + argBytes) % 16;
 	if(returnPointer)
 		argBytes -= 4;
 	if(stackOffset != 0)
@@ -232,20 +232,35 @@ void Processor::call_stdcall(void* func, const char* args, ...) {
 			++args;
 		}
 		va_end(list);
-
-		//Then push them in reverse order
-		while(!arg_stack.empty()) {
-			auto& arg = arg_stack.top();
-			if(arg.reg)
-				push(*arg.reg);
-			else if(arg.mem)
-				push(*arg.mem);
-			else
-				push(arg.constant);
-			arg_stack.pop();
-		}
 	}
+
+#ifndef _MSC_VER
+	//Still need to make sure the stack is aligned in GCC
+	Register esp(*this, ESP);
+	unsigned argBytes = argCount * sizeof(void*);
+	unsigned stackOffset = (stackDepth + argBytes) % 16;
+	if(stackOffset != 0)
+		esp -= 16 - stackOffset;
+#endif
+
+	//Then push them in reverse order
+	while(!arg_stack.empty()) {
+		auto& arg = arg_stack.top();
+		if(arg.reg)
+			push(*arg.reg);
+		else if(arg.mem)
+			push(*arg.mem);
+		else
+			push(arg.constant);
+		arg_stack.pop();
+	}
+
 	call(func);
+
+#ifndef _MSC_VER
+	if(stackOffset != 0)
+		esp += 16 - stackOffset;
+#endif
 }
 
 Processor::Processor(CodePage& codePage, unsigned defaultBitMode ) {
