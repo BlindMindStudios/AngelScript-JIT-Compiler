@@ -360,12 +360,7 @@ void Processor::migrate(CodePage& prevPage, CodePage& newPage) {
 template<>
 Processor& Processor::operator<<(MemAddress addr) {
 	if(addr.absolute_address != 0) {
-		if(addr.offset == -1) {
-			//Calculate offset from RIP
-			int64_t ripoff = uint64_t(addr.absolute_address) - uint64_t(op + 1 + 4);
-			return *this << mod_rm(addr.other % 8, ADR, ADDR) << (int)ripoff;
-		}
-		else if((size_t)addr.absolute_address <= UINT_MAX) {
+		if((size_t)addr.absolute_address <= UINT_MAX) {
 			//Normal 32 bit address needs a none sib byte
 			return *this << mod_rm(addr.other % 8, ADR, SIB) << sib(0x4, 0, ADDR) << (int)(size_t)addr.absolute_address;
 		}
@@ -428,14 +423,8 @@ Processor& Processor::operator<<(AddrPrefix pr) {
 
 	//64 bit absolute addresses need to mangle a register in order to work
 	if((size_t)adr.absolute_address > (size_t)UINT_MAX) {
-		int64_t ripoff = uint64_t(adr.absolute_address) - uint64_t(op);
-		if(ripoff >= (int64_t)INT_MIN+32 && ripoff <= (int64_t)INT_MAX-32) {
-			adr.offset = -1;
-		}
-		else {
-			*this << '\x49' << '\xBB' << (uint64_t)adr.absolute_address;
-			adr.code = R11;
-		}
+		*this << '\x49' << '\xBB' << (uint64_t)adr.absolute_address;
+		adr.code = R11;
 	}
 
 	//Further prefixes that need to be before the REX byte
