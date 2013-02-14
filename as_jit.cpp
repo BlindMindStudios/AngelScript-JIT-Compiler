@@ -3300,10 +3300,22 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 	int argBytes = (lastArg-firstArg + 1) * cpu.pushSize();
 	unsigned popCount = func->paramSize * sizeof(asDWORD);
 
+	if(!objPointer) {
+		firstArg = 1;
+		lastArg += 1;
+		popCount += sizeof(void*);
+	}
+
 	//retPointer takes up an extra space
 	if(sFunc->DoesReturnOnStack()) {
 		argBytes += sizeof(asDWORD);
 		popCount += sizeof(asDWORD);
+
+		//Copy out retPointer
+		edx = as<void*>(*esi + (firstArg * sizeof(asDWORD)));
+		as<void*>(*esp + local::retPointer) = edx;
+
+		firstArg += 1; lastArg += 1;
 	}
 
 	cpu.call_cdecl_prep(argBytes);
@@ -3320,9 +3332,6 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 			cpu.push(*objPointer);
 	}
 	else {
-		firstArg = 1; lastArg += 1;
-		popCount += sizeof(void*);
-
 		ecx = as<void*>(*esi);
 		ecx &= ecx;
 
@@ -3334,13 +3343,6 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 		ecx += func->baseOffset;
 		if(last)
 			cpu.push(ecx);
-	}
-
-	//Copy out retPointer
-	if(sFunc->DoesReturnOnStack()) {
-		edx = as<void*>(*esi + (firstArg * sizeof(asDWORD)));
-		as<void*>(*esp + local::retPointer) = edx;
-		firstArg += 1; lastArg += 1;
 	}
 
 	for(int i = lastArg-1; i >= firstArg; --i)
