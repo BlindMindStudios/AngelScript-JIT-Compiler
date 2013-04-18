@@ -64,6 +64,38 @@ short offset(asDWORD* op, unsigned n) {
 	return *(((short*)op) + (n+1)) * sizeof(asDWORD);
 }
 
+//Returns true if the op will clear the temporary var
+// Used to determine if we need to perform a full test in a Test-Jump pair
+bool clearsTemporary(asEBCInstr op) {
+	switch(op) {
+		case asBC_TZ:
+		case asBC_TNZ:
+		case asBC_TS:
+		case asBC_TNS:
+		case asBC_TP:
+		case asBC_TNP:
+
+		case asBC_CMPd:
+		case asBC_CMPu:
+		case asBC_CMPf:
+		case asBC_CMPi:
+		case asBC_CMPIi:
+		case asBC_CMPIf:
+		case asBC_CMPIu:
+
+		case asBC_CmpPtr:
+
+		case asBC_CpyVtoR4:
+		case asBC_CpyVtoR8:
+
+		case asBC_CMPi64:
+		case asBC_CMPu64:
+			return true;
+	}
+
+	return false;
+}
+
 //Wrappers so we can deal with complex pointers/calling conventions
 
 void stdcall allocScriptObject(asCObjectType* type, asCScriptFunction* constructor, asIScriptEngine* engine, asSVMRegisters* registers);
@@ -551,6 +583,24 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		}
 	};
 
+	auto do_jump_from = [&](JumpType type, asDWORD* op) {
+		asDWORD* bc = op + asBC_INTARG(op) + 2;
+		auto& jmp = jumpTable[bc - start];
+		if(jmp != 0) {
+			//Jump to code that already exists
+			cpu.jump(type, jmp);
+		}
+		else if(bc > op) {
+			//Prep the jump for a future instruction
+			futureJumps.insert(std::pair<asDWORD*,void*>(bc,cpu.prep_long_jump(type)));
+		}
+		else {
+			//We can't handle this address, so generate a special return that does the jump ahead of time
+			rarg = bc;
+			cpu.jump(type, ret_pos);
+		}
+	};
+
 	auto check_space = [&](unsigned bytes) {
 		unsigned remaining = activePage->getFreeSize() - (cpu.op - byteStart);
 		if(remaining < bytes) {
@@ -626,8 +676,9 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			auto nextOp = asEBCInstr(*(asBYTE*)pNextOp);
 
 			auto pThirdOp = pNextOp + toSize(nextOp);
+			auto thirdOp = asBC_MAXBYTECODE;
 			if(pThirdOp < end) {
-				auto thirdOp = asEBCInstr(*(asBYTE*)pThirdOp);
+				thirdOp = asEBCInstr(*(asBYTE*)pThirdOp);
 
 				switch(op) {
 				case asBC_SetV8:
@@ -678,6 +729,29 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 						*edi-offset(pOp,0) = eax;
 						*edi-offset(pNextOp,0) = eax;
 						*edi-offset(pThirdOp,0) = eax;
+
+						pOp = pThirdOp + toSize(thirdOp);
+						continue;
+					}
+					break;
+				case asBC_PshVPtr:
+					//Optimize PshVPtr, ADDSi, RDSPtr to avoid many interim ops
+					if(nextOp == asBC_ADDSi && thirdOp == asBC_RDSPtr) {
+						pax = as<void*>(*edi-offset0);
+						if(reservedPushBytes != 0)
+							reservedPushBytes = 0;
+						else
+							esi -= sizeof(void*);
+
+						pax &= pax;
+						auto notNull = cpu.prep_short_jump(NotZero);
+							as<void*>(*esi) = pax;
+							Return(false);
+						cpu.end_short_jump(notNull);
+
+						pax = as<void*>(*pax+asBC_SWORDARG0(pNextOp));
+						as<void*>(*esi) = pax;
+						eaxOnStack = 2;
 
 						pOp = pThirdOp + toSize(thirdOp);
 						continue;
@@ -809,6 +883,61 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					continue;
 				}
 				break;
+			case asBC_CMPi:
+			case asBC_CMPIi:
+			case asBC_CMPu:
+			case asBC_CMPIu:
+				{
+				JumpType jump = Jump;
+
+				//Optimize various CMPi, JConditional to avoid additional logic checks
+				switch(nextOp) {
+				case asBC_JZ: case asBC_JLowZ:
+					jump = Equal; break;
+				case asBC_JNZ: case asBC_JLowNZ:
+					jump = NotEqual; break;
+				case asBC_JS:
+					jump = Sign; break;
+				case asBC_JNS:
+					jump = NotSign; break;
+				case asBC_JP:
+					jump = Greater; break;
+				case asBC_JNP:
+					jump = LessOrEqual; break;
+				}
+
+				//Conditional tests never use plain Jump
+				if(jump != Jump) {
+					eax = *edi-offset0;
+					if(op == asBC_CMPIi || op == asBC_CMPIu)
+						eax == asBC_DWORDARG(pOp);
+					else
+						eax == *edi-offset1;
+
+					do_jump_from(jump, pNextOp);
+
+					//Perform comparison if it could have an effect
+					/*if(!clearsTemporary(thirdOp)) {
+						if(op == asBC_CMPi || op == asBC_CMPIi) {
+							bl.setIf(Greater);
+
+							auto t2 = cpu.prep_short_jump(GreaterOrEqual);
+							~bl;
+							cpu.end_short_jump(t2);
+						}
+						else {//CMPu/Iu
+							bl.setIf(Above);
+
+							auto t2 = cpu.prep_short_jump(NotBelow);
+							~bl;
+							cpu.end_short_jump(t2);
+						}
+					}*/
+
+					pOp = pThirdOp;
+					continue;
+				}
+				}
 			}
 		}
 
@@ -2276,16 +2405,24 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 #ifdef JIT_64
 				Register arg0 = as<void*>(cpu.intArg64(0, 0));
 				Register arg1 = as<void*>(cpu.intArg64(1, 1));
+				Register temp = as<int>(cpu.intArg64(2, 2));
 #else
 				Register arg0 = eax;
 				Register arg1 = ecx;
+				Register temp = edx;
 #endif
 
 				arg1 = as<void*>(*pdi-offset0);
 				arg1 &= arg1;
-				auto p = cpu.prep_short_jump(NotZero);
+				auto nullFunc = cpu.prep_short_jump(NotZero);
+
+				temp = *arg1 + offsetof(asCScriptFunction,funcType);
+				temp == asFUNC_SCRIPT;
+				auto isScript = cpu.prep_short_jump(Zero);
+				
+				cpu.end_short_jump(nullFunc);
 				Return(false);
-				cpu.end_short_jump(p);
+				cpu.end_short_jump(isScript);
 
 				*ebp + offsetof(asSVMRegisters,programPointer) = pOp+1;
 				*ebp + offsetof(asSVMRegisters,stackPointer) = esi;
