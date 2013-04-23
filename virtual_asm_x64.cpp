@@ -113,11 +113,6 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 	unsigned argCount = 0, floatCount = 0, intCount = 0, regCount = 0, stackBytes = 0;
 
 	//Set the object as first argument
-#ifdef _MSC_VER
-	//TODO
-	if(obj)
-		throw "Implement this.";
-#else
 	if(obj) {
 		if(!isIntArg64Register(intCount, argCount))
 			stackBytes += pushSize();
@@ -125,7 +120,6 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 		++intCount;
 		arg_stack.push(obj);
 	}
-#endif
 
 	//Read the arguments in...
 	while(args && *args != '\0') {
@@ -161,7 +155,7 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 		else if(*args == 'c') {
 			if(!isIntArg64Register(intCount, argCount))
 				stackBytes += pushSize();
-			arg_stack.push(va_arg(ap,uint64_t));
+			arg_stack.push(va_arg(ap,unsigned));
 			++intCount;
 		}
 		else
@@ -169,6 +163,11 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 		++argCount;
 		++args;
 	}
+
+#ifdef _MSC_VER
+	if(stackBytes < 32)
+		stackBytes = 32;
+#endif
 
 	call_cdecl_prep(stackBytes);
 
@@ -305,6 +304,11 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 		arg_stack.pop();
 		--a;
 	}
+
+#ifdef _MSC_VER
+	esp -= 32;
+#endif
+
 	return stackBytes;
 }
 
@@ -552,8 +556,11 @@ void Processor::jump(JumpType type, volatile byte* dest) {
 	int64_t offset = ((size_t)dest - (size_t)op) - 2;
 	if(offset >= CHAR_MIN && offset <= CHAR_MAX)
 		*this << shortJumpCodes[type] << (char)offset;
-	else if (offset > INT_MAX || offset < INT_MIN)
-		throw "64 bit relative jumps not supported";
+	else if (offset > INT_MAX || offset < INT_MIN) {
+		Register eax(*this, EAX);
+		eax = (void*)dest;
+		jump(eax);
+	}
 	else if(type == Jump)
 		*this << longJumpCodes[Jump] << (int)(offset-3); //Long jump is 3 bytes larger, jump is from the end of the full opcode
 	else

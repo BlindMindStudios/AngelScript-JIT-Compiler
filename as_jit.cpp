@@ -5,7 +5,7 @@
 #include <limits.h>
 #include <map>
 #include <functional>
-
+#include <cstdint>
 
 #include "../source/as_scriptfunction.h"
 #include "../source/as_objecttype.h"
@@ -21,6 +21,10 @@ CriticalSection jitLock;
 
 #ifdef __amd64__
 #define stdcall
+#define JIT_64
+#endif
+
+#ifdef _M_AMD64
 #define JIT_64
 #endif
 
@@ -42,7 +46,7 @@ CriticalSection jitLock;
 static std::set<asCScriptFunction*> unhandledCalls;
 #endif
 
-const unsigned codePageSize = 100000;
+const unsigned codePageSize = 65535 * 4;
 
 #define offset0 (asBC_SWORDARG0(pOp)*sizeof(asDWORD))
 #define offset1 (asBC_SWORDARG1(pOp)*sizeof(asDWORD))
@@ -219,6 +223,12 @@ enum ObjectPosition {
 	OP_None
 };
 
+enum EAXContains {
+	EAX_Unknown,
+	EAX_Stack,
+	EAX_Offset,
+};
+
 struct SystemCall {
 	Processor& cpu;
 	FloatingPointUnit& fpu;
@@ -295,7 +305,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 	//Get the active page, or create a new one if the current one is missing or too small (256 bytes for the entry and a few ops)
 	if(activePage == 0 || activePage->final || activePage->getFreeSize() < 256)
-		activePage = new CodePage(codePageSize);
+		activePage = new CodePage(codePageSize, reinterpret_cast<void*>(&toSize));
 	else
 		activePage->grab();
 
@@ -308,7 +318,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 	bool waitingForEntry = true;
 
 	//Special case for a common op-pairing (*esi = eax; eax = *esi;)
-	unsigned eaxOnStack = false;
+	int currentEAX = EAX_Unknown, nextEAX = EAX_Unknown;
 
 	//Setup the processor as a 32 bit processor, as most angelscript ops work on integers
 	Processor cpu(*activePage, 32);
@@ -604,7 +614,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 	auto check_space = [&](unsigned bytes) {
 		unsigned remaining = activePage->getFreeSize() - (cpu.op - byteStart);
 		if(remaining < bytes) {
-			CodePage* newPage = new CodePage(codePageSize);
+			CodePage* newPage = new CodePage(codePageSize, reinterpret_cast<void*>(&toSize));
 
 			cpu.migrate(*activePage, *newPage);
 
@@ -619,6 +629,9 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 	volatile void* lastop = 0;
 
 	while(pOp < end) {
+		currentEAX = nextEAX;
+		nextEAX = EAX_Unknown;
+
 		if(cpu.op > activePage->getActivePage() + activePage->getFreeSize())
 			throw "Page exceeded...";
 
@@ -751,7 +764,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 						pax = as<void*>(*pax+asBC_SWORDARG0(pNextOp));
 						as<void*>(*esi) = pax;
-						eaxOnStack = 2;
+						nextEAX = EAX_Stack;
 
 						pOp = pThirdOp + toSize(thirdOp);
 						continue;
@@ -788,7 +801,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					reservedPushBytes -= sizeof(asDWORD);
 					*esi + reservedPushBytes = eax;
 					if(reservedPushBytes == 0)
-						eaxOnStack = 2;
+						nextEAX = EAX_Stack;
 
 					pOp = pThirdOp;
 					continue;
@@ -813,7 +826,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 						arg0.copy_address(as<void*>(*edi-offset0));
 					else //if(op == asBC_PshVPtr)
 						arg0 = as<void*>(*edi-offset0);
-					if(!eaxOnStack)
+					if(currentEAX != EAX_Stack)
 						pax = as<void*>(*esi);
 
 					//Check for null pointers
@@ -823,7 +836,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					void* test2 = cpu.prep_short_jump(Zero);
 					
 					as<void*>(*esi) = arg0;
-					eaxOnStack = 2;
+					nextEAX = EAX_Stack;
 
 					cpu.call_cdecl((void*)memcpy,"rrc", &arg0, &pax, unsigned(asBC_WORDARG0(pNextOp))*4);
 					void* skip_ret = cpu.prep_short_jump(Jump);
@@ -883,6 +896,24 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					continue;
 				}
 				break;
+			case asBC_ADDSi:
+				//Optimize ADDSi, RDSPtr to avoid duplicate checks and copies
+				if(nextOp == asBC_RDSPtr) {
+					if(currentEAX != EAX_Stack)
+						pax = as<void*>(*esi);
+
+					pax &= pax;
+					auto notNull = cpu.prep_short_jump(NotZero);
+					Return(false);
+					cpu.end_short_jump(notNull);
+
+					pax = as<void*>(*pax+asBC_SWORDARG0(pOp));
+					as<void*>(*esi) = pax;
+					nextEAX = EAX_Stack;
+
+					pOp = pThirdOp;
+					continue;
+				}
 			case asBC_CMPi:
 			case asBC_CMPIi:
 			case asBC_CMPu:
@@ -971,28 +1002,28 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			eax = *edi-offset0;
 			*esi + reservedPushBytes = eax;
 			if(reservedPushBytes == 0)
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			break;
 		case asBC_PSF:
 			pushPrep(sizeof(void*));
 			pax.copy_address(as<void*>(*edi-offset0));
 			as<void*>(*esi + reservedPushBytes) = pax;
 			if(reservedPushBytes == 0)
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			break;
 		case asBC_PshG4:
 			pushPrep(sizeof(asDWORD));
 			eax = MemAddress(cpu, (void*)asBC_PTRARG(pOp));
 			*esi + reservedPushBytes = eax;
 			if(reservedPushBytes == 0)
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			break;
 		case asBC_PshGPtr:
 			pushPrep(sizeof(void*));
 			pax = as<void*>(MemAddress(cpu, (void*)asBC_PTRARG(pOp)));
 			as<void*>(*esi + reservedPushBytes) = pax;
 			if(reservedPushBytes == 0)
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			break;
 		case asBC_PshC8:
 			{
@@ -1012,7 +1043,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			pax = as<void*>(*edi-offset0);
 			as<void*>(*esi + reservedPushBytes) = pax;
 			if(reservedPushBytes == 0)
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			break;
 		case asBC_PshRPtr: 
 			pushPrep(sizeof(void*));
@@ -1023,7 +1054,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			pax ^= pax;
 			as<void*>(*esi + reservedPushBytes) = pax;
 			if(reservedPushBytes == 0)
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			break;
 		case asBC_OBJTYPE:
 			pushPrep(sizeof(void*));
@@ -1054,26 +1085,27 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 		////Now the normally-ordered ops
 		case asBC_SwapPtr:
-			pax = as<void*>(*esi);
+			if(currentEAX != EAX_Stack)
+				pax = as<void*>(*esi);
 			pax.swap(as<void*>(*esi+sizeof(void*)));
 			as<void*>(*esi) = pax;
-			eaxOnStack = 2;
+			nextEAX = EAX_Stack;
 			break;
 		case asBC_NOT:
 			{
-				pcx.copy_address(*edi-offset0);
-
-				al = as<byte>(*pcx);
+				if(currentEAX != EAX_Offset + offset0)
+					al = as<byte>(*edi-offset0);
 				al &= al;
 				al.setIf(Zero);
-				eax &= 0xff;
-				*ecx = eax;
+				*edi-offset0 = eax;
+				nextEAX = EAX_Offset + offset0;
 			} break;
 		//case asBC_PshG4: //All pushes are handled above, near asBC_PshC4
 		case asBC_LdGRdR4:
 			pbx = (void*) asBC_PTRARG(pOp);
 			eax = *pbx;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_CALL:
 			{
@@ -1210,45 +1242,57 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			~(*edi-offset0);
 			break;
 		case asBC_BAND:
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			eax &= *edi-offset2;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_BOR:
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			eax |= *edi-offset2;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_BXOR:
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			eax ^= *edi-offset2;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_BSLL: {
 			Register c(cpu, ECX);
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			c = *edi-offset2;
 			eax <<= c;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			} break;
 		case asBC_BSRL: {
 			Register c(cpu, ECX);
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			c = *edi-offset2;
 			eax.rightshift_logical(c);
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			} break;
 		case asBC_BSRA: {
 			Register c(cpu, ECX);
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			c = *edi-offset2;
 			eax >>= c;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			} break;
 		case asBC_COPY:
 			{
 				check_space(128);
-				if(!eaxOnStack)
+				if(currentEAX != EAX_Stack)
 					pax = as<void*>(*esi);
 				esi += sizeof(void*);
 #ifdef JIT_64
@@ -1277,7 +1321,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		//case asBC_PshVPtr:
 		case asBC_RDSPtr:
 			{
-				if(!eaxOnStack)
+				if(currentEAX != EAX_Stack)
 					pax = as<void*>(*esi);
 
 				pax &= pax;
@@ -1287,7 +1331,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				pax = as<void*>(*pax);
 				as<void*>(*esi) = pax;
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			} break;
 		case asBC_CMPd:
 			{
@@ -1670,7 +1714,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			}break;
 		case asBC_CHKREF:
 			{
-				if(!eaxOnStack)
+				if(currentEAX != EAX_Stack)
 					pax = as<void*>(*esi);
 				pax &= pax;
 				auto p = cpu.prep_short_jump(NotZero);
@@ -1720,7 +1764,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			} break;
 		case asBC_ADDSi:
 			{
-				if(!eaxOnStack)
+				if(currentEAX != EAX_Stack)
 					pax = as<void*>(*esi);
 
 				pax &= pax;
@@ -1730,7 +1774,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				pax += asBC_SWORDARG0(pOp);
 				as<void*>(*esi) = pax;
-				eaxOnStack = 2;
+				nextEAX = EAX_Stack;
 			} break;
 
 		case asBC_CpyVtoV4:
@@ -1756,6 +1800,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_CpyVtoG4:
 			eax = *edi-offset0;
 			MemAddress(cpu, (void*)asBC_PTRARG(pOp)) = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 
 		case asBC_CpyRtoV4:
@@ -1774,22 +1819,26 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_CpyGtoV4:
 			eax = MemAddress(cpu, (void*)asBC_PTRARG(pOp));
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 
 		case asBC_WRTV1:
 			cpu.setBitMode(8);
 			(*ebx).direct_copy(*edi-offset0, eax);
 			cpu.resetBitMode();
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_WRTV2:
 			cpu.setBitMode(16);
 			(*ebx).direct_copy(*edi-offset0, eax);
 			cpu.resetBitMode();;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_WRTV4:
 			cpu.setBitMode(32);
 			(*ebx).direct_copy(*edi-offset0, eax);
 			cpu.resetBitMode();
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_WRTV8:
 			cpu.setBitMode(64);
@@ -1801,14 +1850,18 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			eax = *ebx;
 			eax &= 0x000000ff;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_RDR2:
 			eax = *ebx;
 			eax &= 0x0000ffff;
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_RDR4:
-			as<asDWORD>(*edi-offset0).direct_copy(as<asDWORD>(*ebx), eax); break;
+			as<asDWORD>(*edi-offset0).direct_copy(as<asDWORD>(*ebx), eax);
+			nextEAX = EAX_Offset + offset0;
+			break;
 		case asBC_RDR8:
 			as<asQWORD>(*edi-offset0).direct_copy(as<asQWORD>(*ebx), eax); break;
 		case asBC_LDG:
@@ -1820,13 +1873,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		//case asBC_PGA: //All pushes are handled above, near asBC_PshC4
 		case asBC_CmpPtr:
 			{
-			pax = as<void*>(*edi-offset0);
-			pax == as<void*>(*edi-offset1);
+				if(currentEAX != EAX_Offset + offset0)
+					pax = as<void*>(*edi-offset0);
+				pax == as<void*>(*edi-offset1);
 
-			bl.setIf(Above);
-			auto t2 = cpu.prep_short_jump(NotBelow);
-			~bl; //0xff if < 0
-			cpu.end_short_jump(t2);
+				bl.setIf(Above);
+				auto t2 = cpu.prep_short_jump(NotBelow);
+				~bl; //0xff if < 0
+				cpu.end_short_jump(t2);
 			}
 			break;
 		//case asBC_VAR: //All pushes are handled above, near asBC_PshC4
@@ -1845,17 +1899,20 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			*edi-offset0 &= 0xffff;
 			break;
 		case asBC_ADDi:
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			eax += *edi-offset2;
 			*edi-offset0 = eax;
 			break;
 		case asBC_SUBi:
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			eax -= *edi-offset2;
 			*edi-offset0 = eax;
 			break;
 		case asBC_MULi:
-			eax = *edi-offset1;
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
 			eax *= *edi-offset2;
 			*edi-offset0 = eax;
 			break;
@@ -1985,12 +2042,17 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 #endif
 			} break;
 		case asBC_ADDIi:
-			(*edi-offset0).direct_copy(*edi-offset1,eax);
-			*edi-offset0 += asBC_INTARG(pOp+1);
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
+			eax += asBC_INTARG(pOp+1);
+			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_SUBIi:
-			(*edi-offset0).direct_copy(*edi-offset1,eax);
-			*edi-offset0 -= asBC_INTARG(pOp+1);
+			if(currentEAX != EAX_Offset + offset1)
+				eax = *edi-offset1;
+			eax -= asBC_INTARG(pOp+1);
+			*edi-offset0 = eax;
 			break;
 		case asBC_MULIi:
 			eax.multiply_signed(*edi-offset1,asBC_INTARG(pOp+1));
@@ -2016,7 +2078,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			break;
 		case asBC_ChkRefS:
 			//Return if *(*esi) == 0
-			if(!eaxOnStack)
+			if(currentEAX != EAX_Stack)
 				pax = as<void*>(*esi);
 			eax = as<int>(*pax);
 			eax &= eax;
@@ -2025,7 +2087,8 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			break;
 		case asBC_ChkNullV:
 			//Return if (*edi-offset0) == 0
-			eax = *edi-offset0;
+			if(currentEAX != EAX_Offset + offset0)
+				eax = *edi-offset0;
 			eax &= eax;
 			rarg = (void*)pOp;
 			cpu.jump(Zero,ret_pos);
@@ -2389,7 +2452,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		  } break;
 		case asBC_ChkNullS:
 			{
-				if(asBC_WORDARG0(pOp) != 0 && !eaxOnStack)
+				if(asBC_WORDARG0(pOp) != 0 && currentEAX != EAX_Stack)
 					eax = *esi+(asBC_WORDARG0(pOp) * sizeof(asDWORD));
 				eax &= eax;
 				void* not_zero = cpu.prep_short_jump(NotZero);
@@ -2451,8 +2514,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_DIVu:
 			ecx = *edi-offset2;
 
-			eax = ecx;
-			eax &= eax;
+			ecx &= ecx;
 			{
 			void* zero_test = cpu.prep_short_jump(NotZero);
 			Return(false);
@@ -2468,8 +2530,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_MODu:
 			ecx = *edi-offset2;
 
-			eax = ecx;
-			eax &= eax;
+			ecx &= ecx;
 			{
 			void* zero_test = cpu.prep_short_jump(NotZero);
 			Return(false);
@@ -2566,8 +2627,6 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 #endif
 
 		pOp += toSize(op);
-		if(eaxOnStack)
-			--eaxOnStack;
 	}
 
 	//Fill out all deferred pointers for this function
@@ -2913,8 +2972,8 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	call_entry(func, sFunc);
 
 	int argCount = sFunc->parameterTypes.GetLength();
-	size_t stackBytes = 0;
-	size_t argOffset = 0;
+	unsigned stackBytes = 0;
+	unsigned argOffset = 0;
 	bool stackObject = false;
 
 	int intCount = 0;
@@ -2924,8 +2983,31 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	bool retOnStack = false;
 	int firstPos = 0;
 
+	//if(sFunc->name == "draw")
+	//	bool f = false;
+	
+	//'this' before 'return pointer' on MSVC
+	if(pos == OP_This) {
+		Register reg = as<void*>(cpu.intArg64(0, 0));
+		if(objPointer) {
+			reg = *objPointer;
+		}
+		else {
+			reg = as<void*>(*esi);
+			argOffset += sizeof(void*);
+			stackObject = true;
+		}
+		reg &= reg;
+		returnHandler(Zero);
+		reg += func->baseOffset;
+
+		++intCount;
+		++a;
+		firstPos = 1;
+	}
+
 	if(sFunc->DoesReturnOnStack()) {
-		Register arg0 = as<void*>(cpu.intArg64(0, 0, pax));
+		Register arg0 = as<void*>(cpu.intArg64(firstPos, firstPos, pax));
 		if(pos == OP_None || objPointer)
 			arg0 = as<void*>(*esi);
 		else
@@ -2935,7 +3017,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		argOffset += sizeof(void*);
 
 		if(func->hostReturnInMemory) {
-			if(!cpu.isIntArg64Register(0, 0)) {
+			if(!cpu.isIntArg64Register(firstPos, firstPos)) {
 				stackBytes += cpu.pushSize();
 				retOnStack = true;
 			}
@@ -2943,9 +3025,10 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			++intCount;
 			++a;
 
-			firstPos = 1;
+			firstPos += 1;
 		}
 	}
+
 	if(pos == OP_First) {
 		if(!cpu.isIntArg64Register(firstPos, firstPos))
 			stackBytes += cpu.pushSize();
@@ -2975,13 +3058,13 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			argOffset += sizeof(void*);
 		}
 		else if(type.IsFloatType()) {
-			if(!cpu.isFloatArg64Register(intCount, a))
+			if(!cpu.isFloatArg64Register(floatCount, a))
 				stackBytes += cpu.pushSize();
 			++floatCount;
 			argOffset += sizeof(float);
 		}
 		else if(type.IsDoubleType()) {
-			if(!cpu.isFloatArg64Register(intCount, a))
+			if(!cpu.isFloatArg64Register(floatCount, a))
 				stackBytes += cpu.pushSize();
 			++floatCount;
 			argOffset += sizeof(double);
@@ -3000,7 +3083,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	--i; --a; --intCount; --floatCount;
 	cpu.call_cdecl_prep(stackBytes);
 
-	if(pos != OP_None) {
+	if(pos != OP_None && pos != OP_This) {
 		if(objPointer) {
 			*objPointer &= *objPointer;
 			returnHandler(Zero);
@@ -3023,23 +3106,11 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					cpu.push(*objPointer);
 				}
 			}
-			else if(pos == OP_This) {
-				Register ecx(cpu, ECX, sizeof(void*) * 8);
-				ecx = *objPointer;
-			}
 		}
 		else {
 			stackObject = true;
 
-			if(pos == OP_This) {
-				Register ecx(cpu, ECX, sizeof(void*) * 8);
-				ecx = as<void*>(*esi);
-				ecx &= ecx;
-				returnHandler(Zero);
-
-				ecx += func->baseOffset;
-			}
-			else if(pos == OP_First) {
+			if(pos == OP_First) {
 				if(cpu.isIntArg64Register(firstPos, firstPos)) {
 					Register reg = as<void*>(cpu.intArg64(firstPos, firstPos));
 					reg = as<void*>(*esi);
@@ -3126,6 +3197,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 
 		if(type.GetTokenType() == ttQuestion) {
 			IntArg(true);
+			--a;
 			IntArg(false);
 		}
 		else if(type.IsReference() || type.IsObjectHandle()) {
@@ -3146,6 +3218,11 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		cpu.push(temp);
 	if(retPointer && !cpu.isIntArg64Register(0, 0) && func->hostReturnInMemory)
 		cpu.push(pax);
+
+#ifdef _MSC_VER
+	stackBytes += 32;
+	esp -= 32;
+#endif
 
 	cpu.call((void*)func->func);
 
