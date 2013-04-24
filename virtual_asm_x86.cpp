@@ -175,7 +175,7 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 			arg_stack.push(va_arg(ap,Register*));
 		else if(*args == 'm')
 			arg_stack.push(va_arg(ap,MemAddress*));
-		else if(*args == 'c')
+		else if(*args == 'c' || *args == 'p')
 			arg_stack.push(va_arg(ap,unsigned int));
 		else
 			throw 0;
@@ -225,7 +225,7 @@ void Processor::call_stdcall(void* func, const char* args, ...) {
 				arg_stack.push(va_arg(list,Register*));
 			else if(*args == 'm')
 				arg_stack.push(va_arg(list,MemAddress*));
-			else if(*args == 'c')
+			else if(*args == 'c' || *args == 'p')
 				arg_stack.push(va_arg(list,unsigned int));
 			else
 				throw 0;

@@ -452,7 +452,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
 
 		//Prepare the vm state
-		cpu.call_stdcall((void*)callScriptFunction,"rc", &arg0, func);
+		cpu.call_stdcall((void*)callScriptFunction,"rp", &arg0, func);
 		if(flags & JIT_NO_SCRIPT_CALLS)
 			return false;
 		return *(asBYTE*)bc == asBC_JitEntry;
@@ -526,7 +526,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		arg0 = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
 
 		//Prepare the vm state
-		cpu.call_stdcall((void*)callInterfaceMethod,"rc", &arg0, func);
+		cpu.call_stdcall((void*)callInterfaceMethod,"rp", &arg0, func);
 		//This returns the asCScriptFunction* in pax
 
 		DynamicJitScriptCall();
@@ -1528,7 +1528,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					asIScriptEngine* engine = function->GetEngine();
 					asCScriptFunction* f = ((asCScriptEngine*)engine)->GetScriptFunction(func);
 
-					cpu.call_stdcall((void*)allocScriptObject,"cccr",objType,f,engine,&ebp);
+					cpu.call_stdcall((void*)allocScriptObject,"pppr",objType,f,engine,&ebp);
 
 					if(PrepareJitScriptCall(f)) {
 						JitScriptCall(f);
@@ -1539,7 +1539,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					}
 				}
 				else {
-					cpu.call_stdcall((void*)engineAlloc,"cc",
+					cpu.call_stdcall((void*)engineAlloc,"pp",
 						(asCScriptEngine*)function->GetEngine(),
 						objType);
 
@@ -1592,19 +1592,19 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				}
 
 				if(beh->release) {
-					cpu.call_stdcall((void*)engineRelease,"crc",
+					cpu.call_stdcall((void*)engineRelease,"prp",
 						(asCScriptEngine*)function->GetEngine(),
 						&arg1,
 						(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release) );
 				}
 				else if(beh->destruct) {
-					cpu.call_stdcall((void*)engineDestroyFree,"crc",
+					cpu.call_stdcall((void*)engineDestroyFree,"prp",
 						(asCScriptEngine*)function->GetEngine(),
 						&arg1,
 						(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->destruct) );
 				}
 				else {
-					cpu.call_stdcall((void*)engineFree,"cr",
+					cpu.call_stdcall((void*)engineFree,"pr",
 						(asCScriptEngine*)function->GetEngine(),
 						&arg1);
 				}
@@ -1690,7 +1690,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				//Add reference to object 1, if not null
 				arg1 &= arg1;
 				auto prev = cpu.prep_short_jump(Zero);
-				cpu.call_stdcall((void*)engineCallMethod,"crc",
+				cpu.call_stdcall((void*)engineCallMethod,"prp",
 					(asCScriptEngine*)function->GetEngine(),
 					&arg1,
 					(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->addref) );
@@ -1701,7 +1701,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				arg1 = as<void*>(*arg1);
 				arg1 &= arg1;
 				auto dest = cpu.prep_short_jump(Zero);
-				cpu.call_stdcall((void*)engineCallMethod,"crc",
+				cpu.call_stdcall((void*)engineCallMethod,"prp",
 					(asCScriptEngine*)function->GetEngine(),
 					&arg1,
 					(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release) );
@@ -2108,7 +2108,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				if(flags & JIT_NO_SCRIPT_CALLS) {
 					MemAddress ctxPtr( as<void*>(*ebp + offsetof(asSVMRegisters,ctx)) );
 
-					cpu.call_stdcall((void*)callInterfaceMethod,"mc", &ctxPtr, func);
+					cpu.call_stdcall((void*)callInterfaceMethod,"mp", &ctxPtr, func);
 					ReturnFromScriptCall();
 				}
 				else {
@@ -2133,7 +2133,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				auto toEnd2 = cpu.prep_short_jump(Zero);
 				
 				asCObjectType *to = ((asCScriptEngine*)function->GetEngine())->GetObjectTypeFromTypeId(asBC_DWORDARG(pOp));
-				cpu.call_stdcall((void*)castObject,"rc",&arg0,to);
+				cpu.call_stdcall((void*)castObject,"rp",&arg0,to);
 				pax &= pax;
 				auto toEnd3 = cpu.prep_short_jump(Zero);
 
@@ -3249,7 +3249,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				int addref = sFunc->returnType.GetObjectType()->beh.addref;
 				asCScriptFunction* addrefFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(addref);
 
-				cpu.call_stdcall((void*)engineCallMethod, "crc", sFunc->GetEngine(), &ret, addrefFunc);
+				cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &ret, addrefFunc);
 
 				cpu.end_short_jump(noGrab);
 			}
@@ -3317,7 +3317,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				eax == (int)asEXECUTION_EXCEPTION;
 				auto noError = cpu.prep_short_jump(NotEqual);
 
-				cpu.call_stdcall((void*)engineCallMethod, "crc", sFunc->GetEngine(), &temp, destructFunc);
+				cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &temp, destructFunc);
 
 				cpu.end_short_jump(noError);
 			}
@@ -3373,7 +3373,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 				int addref = sFunc->returnType.GetObjectType()->beh.addref;
 				asCScriptFunction* addrefFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(addref);
 
-				cpu.call_stdcall((void*)engineCallMethod, "crc", sFunc->GetEngine(), &eax, addrefFunc);
+				cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &eax, addrefFunc);
 
 				cpu.end_short_jump(noGrab);
 			}
@@ -3406,7 +3406,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 					eax == (int)asEXECUTION_EXCEPTION;
 					auto noError = cpu.prep_short_jump(NotEqual);
 
-					cpu.call_stdcall((void*)engineCallMethod, "crc", sFunc->GetEngine(), &ecx, destructFunc);
+					cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &ecx, destructFunc);
 
 					cpu.end_short_jump(noError);
 				}
@@ -3673,7 +3673,7 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 	if(objPointer)
 		cpu.call_stdcall((void*)callSysWrapper,"cmr",func->GetId(),&ctxPtr,objPointer);
 	else
-		cpu.call_stdcall((void*)callSysWrapper,"cmc",func->GetId(),&ctxPtr,nullptr);
+		cpu.call_stdcall((void*)callSysWrapper,"cmp",func->GetId(),&ctxPtr,nullptr);
 	esi += pax;
 
 	int stdcall sysExit(asSVMRegisters* registers);

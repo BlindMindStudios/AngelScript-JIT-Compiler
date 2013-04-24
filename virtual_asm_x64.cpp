@@ -152,6 +152,12 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 			}
 			arg_stack.push(adr);
 		}
+		else if(*args == 'p') {
+			if(!isIntArg64Register(intCount, argCount))
+				stackBytes += pushSize();
+			arg_stack.push(va_arg(ap,uint64_t));
+			++intCount;
+		}
 		else if(*args == 'c') {
 			if(!isIntArg64Register(intCount, argCount))
 				stackBytes += pushSize();
