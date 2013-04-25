@@ -920,6 +920,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			case asBC_CMPIu:
 				{
 				JumpType jump = Jump;
+				bool isUnsigned = op == asBC_CMPu || op == asBC_CMPIu;
 
 				//Optimize various CMPi, JConditional to avoid additional logic checks
 				switch(nextOp) {
@@ -928,13 +929,13 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				case asBC_JNZ: case asBC_JLowNZ:
 					jump = NotEqual; break;
 				case asBC_JS:
-					jump = Sign; break;
+					jump = isUnsigned ? Below : Sign; break;
 				case asBC_JNS:
-					jump = NotSign; break;
+					jump = isUnsigned ? NotBelow : NotSign; break;
 				case asBC_JP:
-					jump = Greater; break;
+					jump = isUnsigned ? Above : Greater; break;
 				case asBC_JNP:
-					jump = LessOrEqual; break;
+					jump = isUnsigned ? NotAbove : LessOrEqual; break;
 				}
 
 				//Conditional tests never use plain Jump
