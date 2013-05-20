@@ -514,6 +514,8 @@ struct Register {
 
 	//Copies a smaller data type, retaining the sign
 	void copy_expanding(MemAddress address);
+	//Copies an 8 bit register, leaving 0s in higher bytes
+	void copy_zeroing(Register& other);
 
 	void operator=(unsigned long long value);
 	void operator=(void* pointer);

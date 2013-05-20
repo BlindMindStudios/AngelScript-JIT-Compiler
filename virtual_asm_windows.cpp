@@ -137,6 +137,7 @@ CriticalSection::CriticalSection() {
 }
 CriticalSection::~CriticalSection() {
 	DeleteCriticalSection((CRITICAL_SECTION*)pLock);
+	delete (CRITICAL_SECTION*)pLock;
 }
 
 };

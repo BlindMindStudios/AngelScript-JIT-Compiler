@@ -941,6 +941,18 @@ void Register::copy_expanding(MemAddress address) {
 	}
 }
 
+void Register::copy_zeroing(Register& other) {
+	switch(getBitMode()) {
+	case 8:
+	case 16:
+		throw 0;
+	case 32:
+		cpu << '\x0F' << '\xB6' << mod_rm(code,REG,other.code); break;
+	case 64:
+		throw 0;
+	}
+}
+
 void Register::operator=(MemAddress addr) {
 	addr.other = code;
 	switch(getBitMode(addr)) {

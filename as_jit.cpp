@@ -308,6 +308,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		activePage = new CodePage(codePageSize, reinterpret_cast<void*>(&toSize));
 	else
 		activePage->grab();
+	activePage->grab();
 
 	void* curJitFunction = activePage->getFunctionPointer<void*>();
 	void* firstJitEntry = 0;
@@ -618,7 +619,10 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 			cpu.migrate(*activePage, *newPage);
 
+			activePage->drop();
 			activePage = newPage;
+			activePage->grab();
+
 			pages.insert(std::pair<asJITFunction,assembler::CodePage*>(*output,activePage));
 			byteStart = (byte*)cpu.op;
 		}
@@ -1098,6 +1102,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					al = as<byte>(*edi-offset0);
 				al &= al;
 				al.setIf(Zero);
+				eax.copy_zeroing(al);
 				*edi-offset0 = eax;
 				nextEAX = EAX_Offset + offset0;
 			} break;
@@ -1168,17 +1173,17 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			bl == 0; do_jump(LessOrEqual); break;
 
 		case asBC_TZ:
-			bl &= bl; ebx.setIf(Zero); break;
+			bl &= bl; ebx.setIf(Zero); ebx.copy_zeroing(ebx); break;
 		case asBC_TNZ:
-			bl &= bl; ebx.setIf(NotZero); break;
+			bl &= bl; ebx.setIf(NotZero); ebx.copy_zeroing(ebx); break;
 		case asBC_TS:
-			bl &= bl; ebx.setIf(Sign); break;
+			bl &= bl; ebx.setIf(Sign); ebx.copy_zeroing(ebx); break;
 		case asBC_TNS:
-			bl &= bl; ebx.setIf(NotSign); break;
+			bl &= bl; ebx.setIf(NotSign); ebx.copy_zeroing(ebx); break;
 		case asBC_TP:
-			bl == 0; ebx.setIf(Greater); break;
+			bl == 0; ebx.setIf(Greater); ebx.copy_zeroing(ebx); break;
 		case asBC_TNP:
-			bl == 0; ebx.setIf(LessOrEqual); break;
+			bl == 0; ebx.setIf(LessOrEqual); ebx.copy_zeroing(ebx); break;
 
 		case asBC_NEGi:
 			-(*edi-offset0);
@@ -2665,6 +2670,10 @@ void asCJITCompiler::ReleaseJITFunction(asJITFunction func) {
 	auto start = pages.lower_bound(func);
 
 	while(start != pages.end() && start->first == func) {
+		if(start->second == activePage) {
+			activePage->drop();
+			activePage = 0;
+		}
 		start->second->drop();
 		start = pages.erase(start);
 	}
