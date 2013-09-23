@@ -1224,6 +1224,10 @@ void FloatingPointUnit::pop() {
 	//FSTP ST0
 	cpu << '\xDD' << '\xD8';
 }
+
+void FloatingPointUnit::exchange(FloatReg reg) {
+	cpu << '\xD9' << mod_rm(EX_1,REG,reg);
+}
 	
 void FloatingPointUnit::init() {
 	cpu << '\xDB' << '\xE3';

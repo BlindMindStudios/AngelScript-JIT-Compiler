@@ -5,6 +5,7 @@
 
 namespace assembler {
 struct CodePage;
+struct CriticalSection;
 };
 
 enum JITSettings {
@@ -24,10 +25,16 @@ enum JITSettings {
 };
 
 class asCJITCompiler : public asIJITCompiler {
-	unsigned flags;
 	assembler::CodePage* activePage;
 	std::multimap<asJITFunction,assembler::CodePage*> pages;
-	std::map<asJITFunction,unsigned char**> jumpTables;
+
+	assembler::CriticalSection* lock;
+
+	unsigned flags;
+
+	std::multimap<asJITFunction,unsigned char**> jumpTables;
+	unsigned char** activeJumpTable;
+	unsigned currentTableSize;
 
 	struct DeferredCodePointer {
 		void** jitFunction;
@@ -36,6 +43,7 @@ class asCJITCompiler : public asIJITCompiler {
 	std::multimap<asIScriptFunction*,DeferredCodePointer> deferredPointers;
 public:
 	asCJITCompiler(unsigned Flags = 0);
+	~asCJITCompiler();
 	int CompileFunction(asIScriptFunction *function, asJITFunction *output);
     void ReleaseJITFunction(asJITFunction func);
 	void finalizePages();

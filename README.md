@@ -4,7 +4,7 @@ A Just-In-Time Compiler for use with AngelScript.
 
 Currently supports x86 and x86_64 processors on both Windows (using MSVC 2010 or later) and Linux (using GCC 4.6.2 or later)
 
-Last made compatible with version 2.25.2 of the AngelScript library.
+Last made compatible with a version of 2.27 of the AngelScript library.
 
 License
 -------
@@ -87,7 +87,7 @@ When using simple allocation (e.g. default new/delete or malloc/free) that does 
 
 *JIT_NO_SWITCHES*
 
-Disables native switch statements in the JIT. Native switches currently use a rather large amount of memory; disable this option for a smaller, but slower, output.
+Disables native switch statements in the JIT. Disable this option for a smaller, but slower, output.
 
 *JIT_NO_SCRIPT_CALLS*
 

@@ -1038,6 +1038,10 @@ void FloatingPointUnit::negate() {
 	cpu << '\xD9' << '\xE0';
 }
 
+void FloatingPointUnit::exchange(FloatReg reg) {
+	cpu << '\xD9' << mod_rm(EX_1,REG,reg);
+}
+
 void FloatingPointUnit::load_const_0() {
 	cpu << '\xD9' << '\xEE';
 }
