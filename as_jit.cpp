@@ -1475,12 +1475,26 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			} break;
 		case asBC_JMPP:
 			if((flags & JIT_NO_SWITCHES) == 0) {
+				unsigned cases = 1;
+				{
+					//This information isn't stored for us to recover, so we rely on the format of switch cases
+					//Each one is a series of asBC_JMP ops and a single remaining case at the end (default)
+					asDWORD* pNextOp = pOp + toSize(op);
+					asEBCInstr nextOp = asEBCInstr(*(asBYTE*)pNextOp);
+					while(nextOp == asBC_JMP) {
+						++cases;
+						pNextOp += toSize(asBC_JMP);
+						nextOp = asEBCInstr(*(asBYTE*)pNextOp);
+					}
+				}
+
 				SwitchRegion region;
-				region.count = asBC_DWORDARG(pOp) + 1;
+				region.count = cases;
 				region.remaining = region.count;
 				region.buffer = new unsigned char*[region.count];
 				memset(region.buffer, 0, region.count * sizeof(void*));
 				switches.push_back(region);
+				activeSwitch = &switches.back();
 				
 				pax = (void*)(region.buffer);
 
