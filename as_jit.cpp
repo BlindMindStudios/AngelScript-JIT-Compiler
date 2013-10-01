@@ -3831,7 +3831,7 @@ int stdcall callSysWrapper(int id, asIScriptContext* ctx, void* obj) {
 void stdcall returnScriptFunction(asCContext* ctx) {
 	// Return if this was the first function, or a nested execution
 	if( ctx->m_callStack.GetLength() == 0 ||
-		ctx->m_callStack[ctx->m_callStack.GetLength() - 5] == 0 )
+		ctx->m_callStack[ctx->m_callStack.GetLength() - 9] == 0 )
 	{
 		ctx->m_status = asEXECUTION_FINISHED;
 		return;
