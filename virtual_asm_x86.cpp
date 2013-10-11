@@ -442,6 +442,41 @@ void Processor::jump(Register& reg) {
 	*this << '\xFF' << mod_rm(EX_4,REG,reg.code);
 }
 
+void Processor::loop(volatile byte* dest, JumpType type) {
+	int off = dest - op - 2;
+	if(off < CHAR_MIN || off > CHAR_MAX)
+		throw "Loop offset too far.";
+
+	if(type == Jump)
+		*this << '\xE2' << (char)off;
+	else if(type == Zero)
+		*this << '\xE1' << (char)off;
+	else if(type == NotZero)
+		*this << '\xE0' << (char)off;
+	else
+		throw "Unsupported loop type.";
+}
+
+void Processor::string_copy(unsigned size) {
+	if(size == 1)
+		*this << '\xA4';
+	else if(size == 2)
+		*this << '\x66' << '\xA5';
+	else if(size == 4)
+		*this << '\xA5';
+	else if(size == 8)
+		*this << '\xA5' << '\xA5'; //Just copy twice for 8 bytes (for 64 bit compatibility)
+	else
+		throw "Invalid string copy step size.";
+}
+
+void Processor::setDirFlag(bool forward) {
+	if(forward)
+		*this << '\xFC';
+	else
+		*this << '\xFD';
+}
+
 void Processor::ret() {
 	*this << '\xC3';
 }

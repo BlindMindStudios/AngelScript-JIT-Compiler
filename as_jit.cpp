@@ -457,8 +457,16 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 	};
 
 	auto ReturnCondition = [&](JumpType condition) {
-		rarg = (void*)pOp;
-		cpu.jump(condition,ret_pos);
+		if(condition != Zero) {
+			rarg = (void*)pOp;
+			cpu.jump(condition,ret_pos);
+		}
+		else {
+			auto* j = cpu.prep_short_jump(NotZero);
+			rarg = (void*)pOp;
+			cpu.jump(Jump,ret_pos);
+			cpu.end_short_jump(j);
+		}
 	};
 
 	SystemCall sysCall(cpu, fpu, ReturnCondition, pOp, flags);
@@ -866,7 +874,8 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					continue;
 				}
 				break;
-			case asBC_PSF:
+			//TODO: Update this to use inline memcpy improvement
+			/*case asBC_PSF:
 			case asBC_PshVPtr:
 				if(reservedPushBytes == 0 && nextOp == asBC_COPY) {
 					//Optimize:
@@ -907,7 +916,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 					pOp = pThirdOp;
 					continue;
 				}
-				break;
+				break;*/
 			case asBC_CpyRtoV4:
 				if(nextOp == asBC_CpyVtoV4 && offset(pOp,0) == offset(pNextOp,1)) {
 					//Optimize
@@ -1353,30 +1362,90 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_COPY:
 			{
 				check_space(128);
+				unsigned bytes = unsigned(asBC_WORDARG0(pOp))*4;
+
 				if(currentEAX != EAX_Stack)
 					pax = as<void*>(*esi);
 				esi += sizeof(void*);
+
+				void* skip_err_return, *test1, *test2;
+
+				//Assuming memcpy() with function overhead is faster over 128 bytes
+				if(bytes <= 128) {
+					Register from(cpu, ESI, sizeof(void*)*8), to(cpu, EDI, sizeof(void*)*8);
+
+					pax &= pax;
+					test1 = cpu.prep_short_jump(Zero);
+
+					pdx = as<void*>(*esi);
+					pdx &= pdx;
+					test2 = cpu.prep_short_jump(Zero);
+
+					if(bytes == 4) {
+						as<asDWORD>(*pax).direct_copy(as<asDWORD>(*pdx), ecx);
+					}
+					else if(bytes == 8) {
+						as<asQWORD>(*pax).direct_copy(as<asQWORD>(*pdx), ecx);
+					}
+					else {
+						//Loop to copy all bytes for larger types
+						pdx.swap(from);
+						pax.swap(to);
+
+						unsigned copySize = (bytes % 8) == 0 ? 8 : 4;
+						unsigned iterations = bytes / copySize;
+						
+						//Avoid tiny loops
+						bool unroll = iterations <= 4;
+
+						if(!unroll)
+							pcx = iterations;
+						cpu.setDirFlag(true);
+
+						auto* loop = cpu.op;
+						cpu.string_copy(copySize);
+						if(unroll) {
+							for(unsigned i = 1; i < iterations; ++i)
+								cpu.string_copy(copySize);
+						}
+						else {
+							cpu.loop(loop);
+						}
+
+						from = pdx;
+						to = pax;
+					}
+
+					skip_err_return = cpu.prep_short_jump(Jump);
+				}
+				else {
 #ifdef JIT_64
-				Register arg1 = as<void*>(cpu.intArg64(1, 1));
+					Register arg1 = as<void*>(cpu.intArg64(1, 1));
 #else
-				Register arg1 = pcx;
+					Register arg1 = pdx;
 #endif
-				arg1 = as<void*>(*esi);
+					arg1 = as<void*>(*esi);
 
-				//Check for null pointers
-				pax &= pax;
-				void* test1 = cpu.prep_short_jump(Zero);
-				arg1 &= arg1;
-				void* test2 = cpu.prep_short_jump(Zero);
+					//Check for null pointers
+					pax &= pax;
+					test1 = cpu.prep_short_jump(Zero);
+					arg1 &= arg1;
+					test2 = cpu.prep_short_jump(Zero);
 				
-				as<void*>(*esi) = pax;
+					as<void*>(*esi) = pax;
 
-				cpu.call_cdecl((void*)memcpy,"rrc", &pax, &arg1, unsigned(asBC_WORDARG0(pOp))*4);
-				void* skip_ret = cpu.prep_short_jump(Jump);
+					cpu.call_cdecl((void*)memcpy,"rrc", &pax, &arg1, bytes);
+
+					skip_err_return = cpu.prep_short_jump(Jump);
+				}
+
 				//ERR
 				cpu.end_short_jump(test1); cpu.end_short_jump(test2);
+				//Need to restore stack pointer for AS to handle the error
+				esi -= sizeof(void*);
 				Return(false);
-				cpu.end_short_jump(skip_ret);
+				cpu.end_short_jump(skip_err_return);
+
 			} break;
 		//case asBC_PshC8: //All pushes are handled above, near asBC_PshC4
 		//case asBC_PshVPtr:
@@ -1504,15 +1573,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				//Check for a pointer in the jump table to executable code
 				pcx &= pcx;
-				auto handled_jump = cpu.prep_short_jump(NotZero);
+				auto unhandled_jump = cpu.prep_short_jump(Zero);
+				cpu.jump(pcx);
 
+				cpu.end_short_jump(unhandled_jump);
 				//Copy the offsetted pointer to edx and return
 				ecx = (void*)(pOp + 1);
 				rarg.copy_address(*pcx + pdx*(2*sizeof(asDWORD)));
 				cpu.jump(Jump,ret_pos);
-
-				cpu.end_short_jump(handled_jump);
-				cpu.jump(pcx);
 			}
 			else {
 				Return(true);
@@ -1998,8 +2066,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_DIVi:
 			ecx = *edi-offset2;
 
-			eax = ecx;
-			eax &= eax;
+			ecx &= ecx;
 			{
 			void* zero_test = cpu.prep_short_jump(NotZero);
 			Return(false);
@@ -2023,8 +2090,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		case asBC_MODi:
 			ecx = *edi-offset2;
 
-			eax = ecx;
-			eax &= eax;
+			ecx &= ecx;
 			{
 			void* zero_test = cpu.prep_short_jump(NotZero);
 			Return(false);
@@ -2132,10 +2198,12 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				eax = *edi-offset1;
 			eax -= asBC_INTARG(pOp+1);
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_MULIi:
 			eax.multiply_signed(*edi-offset1,asBC_INTARG(pOp+1));
 			*edi-offset0 = eax;
+			nextEAX = EAX_Offset + offset0;
 			break;
 		case asBC_ADDIf:
 			fpu.load_float(*edi-offset1);
@@ -2161,16 +2229,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				pax = as<void*>(*esi);
 			eax = as<int>(*pax);
 			eax &= eax;
-			rarg = (void*)pOp;
-			cpu.jump(Zero,ret_pos);
+			ReturnCondition(Zero);
 			break;
 		case asBC_ChkNullV:
 			//Return if (*edi-offset0) == 0
 			if(currentEAX != EAX_Offset + offset0)
 				eax = *edi-offset0;
 			eax &= eax;
-			rarg = (void*)pOp;
-			cpu.jump(Zero,ret_pos);
+			ReturnCondition(Zero);
 			break;
 		case asBC_CALLINTF:
 			{
@@ -2196,7 +2262,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				}
 			} break;
 		//asBC_SetV1 and asBC_SetV2 are aliased to asBC_SetV4
-		case asBC_Cast: //Can't handle casts (script call)
+		case asBC_Cast:
 			{
 				check_space(512);
 #ifdef JIT_64

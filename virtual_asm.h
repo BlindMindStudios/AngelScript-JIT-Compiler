@@ -315,6 +315,13 @@ struct Processor {
 	void jump(JumpType type, volatile byte* dest);
 	//Jumps to the address in <reg>
 	void jump(Register& reg);
+	//Decrements ecx and jumps if it becomes 0; Optionally conditionally jumps based on a Zero/NotZero test
+	void loop(volatile byte* dest, JumpType type = Jump);
+
+	//Copies from *esi to *edi, and adjusts them both by the data size according to the direction flag
+	void string_copy(unsigned size);
+	//Sets direction flag for string copy
+	void setDirFlag(bool forward);
 
 	//Returns from a function (pop code pointer, jump there)
 	void ret();
