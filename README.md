@@ -20,7 +20,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Utilizing the JIT
 -----------------
 
-The JIT makes extensive use of C++0x additions, such as Lambdas and the auto keyword. For GCC, use "-std=c++0x" to force the new standard. MSVC 2010 is compatible with all C++0x features utilized.
+The JIT makes extensive use of C++11 additions, such as Lambdas and the auto keyword. For GCC, use "-std=c++11" to force the new standard. MSVC 2010 is compatible with all C++11 features utilized.
 
 This short example shows the basics of utilizing the JIT. The folder containing "angelscript.h" should be an include path in the project.
 When including files into the project, choose one of "virtual_asm_windows.cpp" and "virtual_asm_linux.cpp" depending on your intended platform.
