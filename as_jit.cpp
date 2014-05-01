@@ -228,18 +228,36 @@ enum EAXContains {
 	EAX_Offset,
 };
 
+enum SysCallFlags {
+	SC_Safe = 0x01,
+	SC_ValidObj = 0x02,
+	SC_NoSuspend = 0x04,
+	SC_FastFPU = 0x08
+};
+
 struct SystemCall {
 	Processor& cpu;
 	FloatingPointUnit& fpu;
 	asDWORD* const & pOp;
 	unsigned flags;
+	bool callIsSafe;
+	bool checkNullObj;
+	bool handleSuspend;
 	std::function<void(JumpType)> returnHandler;
 
 	SystemCall(Processor& CPU, FloatingPointUnit& FPU,
-		std::function<void(JumpType)> ConditionalReturn, asDWORD* const & bytecode, unsigned Flags)
-		: cpu(CPU), fpu(FPU), returnHandler(ConditionalReturn), pOp(bytecode), flags(Flags) {}
+		std::function<void(JumpType)> ConditionalReturn, asDWORD* const & bytecode, unsigned JitFlags)
+		: cpu(CPU), fpu(FPU), returnHandler(ConditionalReturn), pOp(bytecode), flags(0)
+	{
+		if((JitFlags & JIT_SYSCALL_NO_ERRORS) != 0)
+			flags |= SC_Safe;
+		if((JitFlags & JIT_NO_SUSPEND) != 0)
+			flags |= SC_NoSuspend;
+		if((JitFlags & JIT_SYSCALL_FPU_NORESET) != 0)
+			flags |= SC_FastFPU;
+	}
 
-	void callSystemFunction(asCScriptFunction* func, Register* objPointer = 0);
+	void callSystemFunction(asCScriptFunction* func, Register* objPointer = 0, unsigned callFlags = 0);
 
 private:
 	void call_viaAS(asCScriptFunction* func, Register* objPointer);
@@ -1734,27 +1752,31 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				arg1 &= arg1;
 				auto p = cpu.prep_short_jump(Zero);
 
-				//Copy over registers to the vm in case the called functions observe the call stack
-				if((flags & JIT_ALLOC_SIMPLE) == 0) {
-					cpu.setBitMode(sizeof(void*)*8);
-					*ebp + offsetof(asSVMRegisters,programPointer) = pOp;
-					*ebp + offsetof(asSVMRegisters,stackPointer) = esi;
-					cpu.resetBitMode();
-				}
-
 				if(beh->release) {
-					cpu.call_stdcall((void*)engineRelease,"prp",
-						(asCScriptEngine*)function->GetEngine(),
-						&arg1,
-						(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release) );
+					unsigned callFlags = SC_ValidObj;
+					if((flags & JIT_FAST_REFCOUNT) != 0)
+						callFlags |= SC_NoSuspend | SC_Safe;
+
+					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release);
+					sysCall.callSystemFunction(func, &arg1, callFlags);
 				}
 				else if(beh->destruct) {
+					//Copy over registers to the vm in case the called functions observe the call stack
+					as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp;
+					as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
+
 					cpu.call_stdcall((void*)engineDestroyFree,"prp",
 						(asCScriptEngine*)function->GetEngine(),
 						&arg1,
 						(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->destruct) );
 				}
 				else {
+					//Copy over registers to the vm in case the called functions observe the call stack
+					if((flags & JIT_ALLOC_SIMPLE) == 0) {
+						as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp;
+						as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
+					}
+
 					cpu.call_stdcall((void*)engineFree,"pr",
 						(asCScriptEngine*)function->GetEngine(),
 						&arg1);
@@ -1817,7 +1839,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp;
 				as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
 
-#ifdef JIT_64
+#if defined(JIT_64) && !defined(_MSC_VER)
 				Register arg1 = as<void*>(cpu.intArg64(1, 1));
 #else
 				Register arg1 = pcx;
@@ -1838,13 +1860,17 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				arg1 = as<void*>(*esi);
 				as<void*>(*esp + local::object1) = arg1;
 
+				unsigned callFlags = SC_ValidObj;
+				if((flags & JIT_FAST_REFCOUNT) != 0)
+					callFlags |= SC_NoSuspend | SC_Safe;
+
 				//Add reference to object 1, if not null
 				arg1 &= arg1;
 				auto prev = cpu.prep_short_jump(Zero);
-				cpu.call_stdcall((void*)engineCallMethod,"prp",
-					(asCScriptEngine*)function->GetEngine(),
-					&arg1,
-					(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->addref) );
+				{
+					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->addref);
+					sysCall.callSystemFunction(func, &arg1, callFlags);
+				}
 				cpu.end_short_jump(prev);
 
 				//Release reference from object 2, if not null
@@ -1852,10 +1878,10 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				arg1 = as<void*>(*arg1);
 				arg1 &= arg1;
 				auto dest = cpu.prep_short_jump(Zero);
-				cpu.call_stdcall((void*)engineCallMethod,"prp",
-					(asCScriptEngine*)function->GetEngine(),
-					&arg1,
-					(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release) );
+				{
+					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release);
+					sysCall.callSystemFunction(func, &arg1, callFlags);
+				}
 				cpu.end_short_jump(dest);
 
 				pax = as<void*>(*esp + local::object1);
@@ -2994,7 +3020,13 @@ bool stdcall doSuspend(asIScriptContext* ctx) {
 	}
 }
 
-void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointer) {
+void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointer, unsigned callFlags) {
+	callFlags |= flags;
+
+	callIsSafe = ((callFlags & SC_Safe) != 0);
+	checkNullObj = ((callFlags & SC_ValidObj) == 0);
+	handleSuspend = ((callFlags & SC_NoSuspend) == 0);
+
 	auto* sys = func->sysFuncIntf;
 #ifdef JIT_PRINT_UNHANDLED_CALLS
 	auto unhandled = [&]() {
@@ -3079,13 +3111,13 @@ void SystemCall::call_entry(asSSystemFunctionInterface* func, asCScriptFunction*
 	Register ebp(cpu,EBP), esp(cpu,ESP,pBits);
 	Register pax(cpu,EAX,pBits);
 
-	if(!(flags & JIT_SYSCALL_FPU_NORESET))
+	if((flags & SC_FastFPU) == 0)
 		fpu.init();
 
 	as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp;
 	as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
 
-	if(!(flags & JIT_SYSCALL_NO_ERRORS)) {
+	if(!callIsSafe) {
 		pax = as<void*>(*ebp + offsetof(asSVMRegisters,ctx));
 		pax += offsetof(asCContext,m_callingSystemFunction); //&callingSystemFunction
 		as<void*>(*pax) = sFunc;
@@ -3098,7 +3130,7 @@ void SystemCall::call_entry(asSSystemFunctionInterface* func, asCScriptFunction*
 void SystemCall::call_error() {
 	Register pax(cpu,EAX,sizeof(void*)*8), esp(cpu,ESP);
 
-	if(!(flags & JIT_SYSCALL_NO_ERRORS)) {
+	if(!callIsSafe) {
 		pax = as<void*>(*esp + local::pIsSystem);
 		as<void*>(*pax) = (void*)0;
 	}
@@ -3109,20 +3141,20 @@ void SystemCall::call_exit(asSSystemFunctionInterface* func) {
 	Register pax(cpu,EAX,sizeof(void*)*8);
 
 	
-	if((flags & JIT_SYSCALL_NO_ERRORS) == 0) {
+	if(!callIsSafe) {
 		//Clear IsSystem*
 		pax = as<void*>(*esp + local::pIsSystem);
 		as<void*>(*pax) = (void*)0;
 	}
 
-	if((flags & JIT_SYSCALL_NO_ERRORS) == 0 || (flags & JIT_NO_SUSPEND) == 0) {
+	if(!callIsSafe || handleSuspend) {
 		cl = as<bool>(*ebp+offsetof(asSVMRegisters,doProcessSuspend));
 		cl &= cl;
 		auto* dontSuspend = cpu.prep_short_jump(Zero);
 			
 			pax = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
 
-			if((flags & JIT_SYSCALL_NO_ERRORS) == 0) {
+			if(!callIsSafe) {
 				edx = as<int>(*pax+offsetof(asCContext,m_status));
 				edx == (int)asEXECUTION_ACTIVE;
 				auto* activeContext = cpu.prep_short_jump(Equal);
@@ -3130,7 +3162,7 @@ void SystemCall::call_exit(asSSystemFunctionInterface* func) {
 				cpu.end_short_jump(activeContext);
 			}
 
-			if((flags & JIT_NO_SUSPEND) == 0) {
+			if(handleSuspend) {
 				cl = as<bool>(*pax+offsetof(asCContext,m_doSuspend));
 				cl &= cl;
 				auto* noSuspend = cpu.prep_short_jump(Zero);
@@ -3178,8 +3210,10 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		else if(objPointer) {
 			reg = *objPointer;
 
-			reg &= reg;
-			returnHandler(Zero);
+			if(checkNullObj) {
+				reg &= reg;
+				returnHandler(Zero);
+			}
 			reg += func->baseOffset;
 		}
 		else {
@@ -3187,8 +3221,10 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			argOffset += sizeof(void*);
 			stackObject = true;
 
-			reg &= reg;
-			returnHandler(Zero);
+			if(checkNullObj) {
+				reg &= reg;
+				returnHandler(Zero);
+			}
 			reg += func->baseOffset;
 		}
 
@@ -3297,8 +3333,10 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			}
 		}
 		else if(objPointer) {
-			*objPointer &= *objPointer;
-			returnHandler(Zero);
+			if(checkNullObj) {
+				*objPointer &= *objPointer;
+				returnHandler(Zero);
+			}
 
 			if(pos == OP_First) {
 				if(cpu.isIntArg64Register(firstPos, firstPos)) {
@@ -3326,15 +3364,21 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				if(cpu.isIntArg64Register(firstPos, firstPos)) {
 					Register reg = as<void*>(cpu.intArg64(firstPos, firstPos));
 					reg = as<void*>(*esi);
-					reg &= reg;
-					returnHandler(Zero);
+					
+					if(checkNullObj) {
+						reg &= reg;
+						returnHandler(Zero);
+					}
 
 					reg += func->baseOffset;
 				}
 				else {
 					temp = as<void*>(*esi);
-					temp &= temp;
-					returnHandler(Zero);
+					
+					if(checkNullObj) {
+						temp &= temp;
+						returnHandler(Zero);
+					}
 
 					temp += func->baseOffset;
 				}
@@ -3343,15 +3387,21 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				if(cpu.isIntArg64Register(intCount+1, a+1)) {
 					Register reg = as<void*>(cpu.intArg64(intCount+1, a+1));
 					reg = as<void*>(*esi);
-					reg &= reg;
-					returnHandler(Zero);
+
+					if(checkNullObj) {
+						reg &= reg;
+						returnHandler(Zero);
+					}
 
 					reg += func->baseOffset;
 				}
 				else {
 					temp = as<void*>(*esi);
-					temp &= temp;
-					returnHandler(Zero);
+					
+					if(checkNullObj) {
+						temp &= temp;
+						returnHandler(Zero);
+					}
 
 					temp += func->baseOffset;
 					cpu.push(temp);
@@ -3742,24 +3792,28 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 	cpu.call_cdecl_prep(argBytes);
 
 	if(objPointer) {
-		*objPointer &= *objPointer;
+		if(checkNullObj) {
+			*objPointer &= *objPointer;
 
-		auto j = cpu.prep_short_jump(NotZero);
-			call_error();
-			returnHandler(Jump);
-		cpu.end_short_jump(j);
+			auto j = cpu.prep_short_jump(NotZero);
+				call_error();
+				returnHandler(Jump);
+			cpu.end_short_jump(j);
+		}
 
 		if(last)
 			cpu.push(*objPointer);
 	}
 	else {
 		ecx = as<void*>(*esi);
-		ecx &= ecx;
+		if(checkNullObj) {
+			ecx &= ecx;
 
-		auto j = cpu.prep_short_jump(NotZero);
-			call_error();
-			returnHandler(Jump);
-		cpu.end_short_jump(j);
+			auto j = cpu.prep_short_jump(NotZero);
+				call_error();
+				returnHandler(Jump);
+			cpu.end_short_jump(j);
+		}
 
 		ecx += func->baseOffset;
 		if(last)
@@ -3802,22 +3856,26 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	//Check object pointer for nulls
 	if(!func->objForThiscall) {
 		if(objPointer) {
-			*objPointer &= *objPointer;
-			auto j = cpu.prep_short_jump(NotZero);
-				call_error();
-				returnHandler(Jump);
-			cpu.end_short_jump(j);
+			if(checkNullObj) {
+				*objPointer &= *objPointer;
+				auto j = cpu.prep_short_jump(NotZero);
+					call_error();
+					returnHandler(Jump);
+				cpu.end_short_jump(j);
+			}
 		}
 		else {
 			popThis = true;
 			ecx = as<void*>(*esi);
 			firstArg = 1; lastArg += 1;
 
-			ecx &= ecx;
-			auto j = cpu.prep_short_jump(NotZero);
-				call_error();
-				returnHandler(Jump);
-			cpu.end_short_jump(j);
+			if(checkNullObj) {
+				ecx &= ecx;
+				auto j = cpu.prep_short_jump(NotZero);
+					call_error();
+					returnHandler(Jump);
+				cpu.end_short_jump(j);
+			}
 		}
 	}
 

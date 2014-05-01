@@ -22,6 +22,9 @@ enum JITSettings {
 	//Fall back to AngelScript to perform script calls
 	// Slower, but can be used as a temporary workaround for angelscript changes
 	JIT_NO_SCRIPT_CALLS = 0x20,
+	//Make calling reference counting functions faster in common situations
+	// Reference counting functions which access the script context will produce undefined results
+	JIT_FAST_REFCOUNT = 0x40,
 };
 
 class asCJITCompiler : public asIJITCompiler {
