@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stack>
 #include <stdio.h>
+#include <unordered_set>
 
 //See http://ref.x86asm.net/coder32.html for a list of x86 opcode bytes
 
@@ -46,9 +47,11 @@ struct Argument {
 	Register* reg;
 	MemAddress* mem;
 	uint64_t constant;
+	bool is32;
 	Argument(Register* r) : reg(r), mem(0) {}
 	Argument(MemAddress* m) : reg(0), mem(m) {}
-	Argument(uint64_t Constant) : reg(0), mem(0), constant(Constant) {}
+	Argument(unsigned Constant32) : reg(0), mem(0), constant(Constant32), is32(true) {}
+	Argument(uint64_t Constant) : reg(0), mem(0), constant(Constant), is32(false) {}
 };
 
 void moveToUpperDWORD(MemAddress& address) {
@@ -108,6 +111,7 @@ unsigned Processor::call_cdecl_args(const char* args, va_list ap) {
 
 unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list ap) {
 	std::stack<Argument> arg_stack;
+	std::unordered_set<unsigned char> used_regs;
 	Register esp(*this, ESP, sizeof(void*) * 8);
 
 	unsigned argCount = 0, floatCount = 0, intCount = 0, regCount = 0, stackBytes = 0;
@@ -186,24 +190,6 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 		if(arg.reg) {
 			Register reg = *arg.reg;
 
-			bool isArgReg = false;
-			if(argCount > 1) {
-				if(reg.xmm()) {
-					for(unsigned i = 0; i < maxFloatArgs64(); ++i) {
-						if(reg.code == floatArg64(i, i).code) {
-							isArgReg = true;
-						}
-					}
-				}
-				else {
-					for(unsigned i = 0; i < maxIntArgs64(); ++i) {
-						if(reg.code == intArg64(i, i).code) {
-							isArgReg = true;
-						}
-					}
-				}
-			}
-
 			if(reg.code == ESP || reg.code == R15)
 				throw "Cannot use this register for cdecl call wrapper.";
 
@@ -212,14 +198,17 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 					Register other = floatArg64(floatA, a);
 					other.bitMode = reg.bitMode;
 
-					if(isArgReg && other.code != reg.code)
-						throw "Cannot use this register for cdecl call wrapper.";
+					if(other.code != reg.code) {
+						if(used_regs.find(reg.code) != used_regs.end())
+							throw "Invalid out-of-order use of argument register.";
+						other = reg;
+					}
 
-					other = reg;
+					used_regs.insert(other.code);
 				}
 				else {
-					if(isArgReg)
-						throw "Cannot use this register for cdecl call wrapper.";
+					if(used_regs.find(reg.code) != used_regs.end())
+						throw "Invalid out-of-order use of argument register.";
 					esp -= pushSize();
 					MemAddress adr = *esp;
 					adr.bitMode = reg.bitMode;
@@ -233,14 +222,17 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 					Register other = intArg64(intA, a);
 					other.bitMode = reg.bitMode;
 
-					if(isArgReg && other.code != reg.code)
-						throw "Cannot use this register for cdecl call wrapper.";
+					if(other.code != reg.code) {
+						if(used_regs.find(reg.code) != used_regs.end())
+							throw "Invalid out-of-order use of argument register.";
+						other = reg;
+					}
 
-					other = reg;
+					used_regs.insert(other.code);
 				}
 				else {
-					if(isArgReg)
-						throw "Cannot use this register for cdecl call wrapper.";
+					if(used_regs.find(reg.code) != used_regs.end())
+						throw "Invalid out-of-order use of argument register.";
 					push(reg);
 				}
 				--intA;
@@ -296,8 +288,10 @@ unsigned Processor::call_thiscall_args(Register* obj, const char* args, va_list 
 		else {
 			if(isIntArg64Register(intA, a)) {
 				Register reg = intArg64(intA, a);
-				reg.bitMode = 64;
-
+				if(arg.is32)
+					reg.bitMode = 32;
+				else
+					reg.bitMode = 64;
 				reg = arg.constant;
 			}
 			else {
@@ -515,7 +509,11 @@ void Processor::call(Register& reg) {
 void Processor::call(void* func) {
 	int64_t offset = ((byte*)func - op) - 5;
 	if(offset < (int64_t)INT_MIN || offset > (int64_t)INT_MAX) {
-		*this << '\x49' << '\xBB' << (uint64_t)func;
+		uint64_t abs = (uint64_t)func;
+		if(abs > (uint64_t)UINT_MAX)
+			*this << '\x49' << '\xBB' << abs;
+		else //0-extend small actual addresses
+			*this << '\x41' << '\xBB' << (unsigned)abs;
 		*this << '\x49' << '\xFF' << mod_rm(EX_2,REG,R11 % 8);
 	}
 	else {

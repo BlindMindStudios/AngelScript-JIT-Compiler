@@ -88,7 +88,7 @@ Register Processor::floatReturn64() {
 	return Register(*this, XMM0);
 }
 
-CodePage::CodePage(unsigned int Size, void* requestedStart) : used(0), final(false) {
+CodePage::CodePage(unsigned int Size, void* requestedStart) : used(0), final(false), references(1) {
 	unsigned minPageSize = getMinimumPageSize();
 	unsigned pages = Size / minPageSize;
 
