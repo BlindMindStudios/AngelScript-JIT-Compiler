@@ -320,14 +320,14 @@ namespace local {
 //Used in alloc
 const unsigned allocMem = 2 * sizeof(void*);
 //Used in function calls
-const unsigned pIsSystem = sizeof(void*);
-const unsigned retPointer = 0;
+const unsigned pIsSystem = 3 * sizeof(void*);
+const unsigned retPointer = 4 * sizeof(void*);
 //Use in REFCPY
 const unsigned object1 = 0;
 const unsigned object2 = sizeof(void*);
 };
 
-const unsigned functionReserveSpace = 3 * sizeof(void*);
+const unsigned functionReserveSpace = 5 * sizeof(void*);
 
 int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *output) {
 	asUINT   length;
