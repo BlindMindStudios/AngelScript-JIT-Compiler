@@ -1084,8 +1084,15 @@ void Register::operator|=(unsigned long long mask) {
 }
 
 void Register::operator=(void* pointer) {
-	bitMode = sizeof(void*) * 8;
-	cpu << prefix() << (byte)('\xB8'+(code % 8)) << pointer;
+	if(pointer != (void*)0) {
+		bitMode = sizeof(void*) * 8;
+		cpu << prefix() << (byte)('\xB8'+(code % 8)) << pointer;
+	}
+	else {
+		//Special case setting to a null pointer with implied sign extend
+		bitMode = 32;
+		*this = (unsigned long long)0;
+	}
 }
 
 void Register::operator=(unsigned long long value) {

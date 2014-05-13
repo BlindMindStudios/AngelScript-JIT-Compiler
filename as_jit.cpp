@@ -1782,27 +1782,34 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 						&arg1);
 				}
 
-				as<void*>(*edi-offset0) = nullptr;
+				//Null out pointer on the stack
+				pax ^= pax;
+				as<void*>(*edi-offset0) = pax;
+
 				cpu.end_short_jump(p);
 			}
 			else {
-				as<void*>(*edi-offset0) = nullptr;
+				//Null out pointer on the stack
+				pax ^= pax;
+				as<void*>(*edi-offset0) = pax;
 			}
 			}break;
 		case asBC_LOADOBJ:
 			{
 				cpu.setBitMode(sizeof(void*)*8);
 				eax = *edi-offset0;
-				*ebp+offsetof(asSVMRegisters,objectType) = nullptr;
+				pcx ^= pcx;
+				*ebp+offsetof(asSVMRegisters,objectType) = pcx;
 				*ebp+offsetof(asSVMRegisters,objectRegister) = eax;
-				*edi-offset0 = nullptr;
+				*edi-offset0 = pcx;
 				cpu.resetBitMode();
 			} break;
 		case asBC_STOREOBJ:
 			{
 				cpu.setBitMode(sizeof(void*) * 8);
+				pcx ^= pcx;
 				(*edi-offset0).direct_copy( (*ebp+offsetof(asSVMRegisters,objectRegister)), eax);
-				*ebp+offsetof(asSVMRegisters,objectRegister) = nullptr;
+				*ebp+offsetof(asSVMRegisters,objectRegister) = pcx;
 				cpu.resetBitMode();
 			} break;
 		case asBC_GETOBJ:
@@ -1815,7 +1822,9 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				pcx.copy_address(*edi+pdx*4);
 
 				as<void*>(*pax).direct_copy(as<void*>(*pcx), pdx);
-				as<void*>(*pcx) = nullptr;
+
+				pdx ^= pdx;
+				as<void*>(*pcx) = pdx;
 			} break;
 		case asBC_RefCpyV:
 		case asBC_REFCPY:
@@ -4003,8 +4012,6 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 
 	MemAddress ctxPtr(as<void*>(*ebp + offsetof(asSVMRegisters,ctx)));
 
-	int stdcall callSysWrapper(int id, asIScriptContext* ctx, void* obj);
-
 	if(objPointer)
 		cpu.call_cdecl((void*)CallSystemFunction,"cmr",func->GetId(),&ctxPtr,objPointer);
 	else
@@ -4012,9 +4019,6 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 
 	//Pop the returned amount of dwords from the stack
 	esi.copy_address(*esi+pax*4);
-
-	int stdcall sysExit(asSVMRegisters* registers);
-	cpu.call_stdcall((void*)sysExit,"r",&ebp);
 
 	//Check that there is a return in the valueRegister
 	bool isGeneric = func->sysFuncIntf->callConv == ICC_GENERIC_FUNC || func->sysFuncIntf->callConv == ICC_GENERIC_FUNC_RETURNINMEM
@@ -4031,20 +4035,6 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 	}
 
 	call_exit(func->sysFuncIntf);
-}
-
-int stdcall sysExit(asSVMRegisters* registers) {
-	if(registers->doProcessSuspend) {
-		asCContext* context = (asCContext*)registers->ctx;
-		if(context->m_status != asEXECUTION_ACTIVE) {
-			return 1;
-		}
-		else if(context->m_doSuspend) {
-			context->m_status = asEXECUTION_SUSPENDED;
-			return 1;
-		}
-	}
-	return 0;
 }
 
 void stdcall returnScriptFunction(asCContext* ctx) {
