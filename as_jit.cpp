@@ -4018,7 +4018,7 @@ void SystemCall::call_generic(asCScriptFunction* func, Register* objPointer) {
 	//Pop the returned amount of dwords from the stack
 	esi.copy_address(*esi+pax*4);
 
-	if(!func->returnType.IsObject() || func->returnType.IsReference()) {
+	if(acceptReturn && (!func->returnType.IsObject() || func->returnType.IsReference())) {
 #ifdef JIT_64
 		as<asQWORD>(ebx) = as<asQWORD>(*ebp + offsetof(asSVMRegisters,valueRegister));
 #else
@@ -4057,7 +4057,7 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 		|| func->sysFuncIntf->callConv == ICC_GENERIC_METHOD || func->sysFuncIntf->callConv == ICC_GENERIC_METHOD_RETURNINMEM;
 
 	if(((func->sysFuncIntf->hostReturnSize >= 1 && !func->sysFuncIntf->hostReturnInMemory) || isGeneric)
-	 	&& !(func->returnType.IsObject() && !func->returnType.IsReference()) ) {
+	 	&& !(func->returnType.IsObject() && !func->returnType.IsReference()) && acceptReturn ) {
 
 #ifdef JIT_64
 		as<asQWORD>(ebx) = as<asQWORD>(*ebp + offsetof(asSVMRegisters,valueRegister));
