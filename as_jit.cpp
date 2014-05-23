@@ -324,6 +324,8 @@ const unsigned allocMem = 2 * sizeof(void*);
 //Used in function calls
 const unsigned pIsSystem = 3 * sizeof(void*);
 const unsigned retPointer = 4 * sizeof(void*);
+//Copy of value register in 32 bit mode when returns are being ignored, not used alongside retPointer
+const unsigned regCopy = 4 * sizeof(void*);
 //Use in REFCPY
 const unsigned object1 = 0;
 const unsigned object2 = sizeof(void*);
@@ -3991,6 +3993,15 @@ void SystemCall::call_generic(asCScriptFunction* func, Register* objPointer) {
 	Register ebp(cpu,EBP), esp(cpu,ESP,pBits);
 	Register pax(cpu,EAX,pBits), ebx(cpu,EBX);
 	Register pcx(cpu, ECX, pBits);
+
+#ifndef JIT_64
+	//If we are not accepting returns, we have to save the value register as the call may change the register
+	if(!acceptReturn) {
+		pax = as<int>(*ebp + offsetof(asSVMRegisters,valueRegister) + 4);
+		as<int>(*esp + local::regCopy) = pax;
+	}
+#endif
+
 	call_entry(func->sysFuncIntf, func);
 
 	//Trigger generic call on the context
@@ -4025,6 +4036,12 @@ void SystemCall::call_generic(asCScriptFunction* func, Register* objPointer) {
 		ebx = *ebp + offsetof(asSVMRegisters,valueRegister);
 #endif
 	}
+	else {
+#ifndef JIT_64
+		pax = as<int>(*esp + local::regCopy);
+		as<int>(*ebp + offsetof(asSVMRegisters,valueRegister) + 4) = pax;
+#endif
+	}
 
 	call_exit(func->sysFuncIntf);
 }
@@ -4038,6 +4055,14 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 #endif
 	Register ebp(cpu,EBP,pBits), pax(cpu,EAX,pBits), esp(cpu,ESP,pBits), ebx(cpu,EBX);
 	Register cl(cpu,ECX,8);
+
+#ifndef JIT_64
+	//If we are not accepting returns, we have to save the value register or AngelScript will change it regardless of the return type
+	if(!acceptReturn) {
+		pax = as<int>(*ebp + offsetof(asSVMRegisters,valueRegister) + 4);
+		as<int>(*esp + local::regCopy) = pax;
+	}
+#endif
 
 	//Copy state to VM state in case the call inspects the context
 	call_entry(func->sysFuncIntf,func);
@@ -4056,13 +4081,22 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 	bool isGeneric = func->sysFuncIntf->callConv == ICC_GENERIC_FUNC || func->sysFuncIntf->callConv == ICC_GENERIC_FUNC_RETURNINMEM
 		|| func->sysFuncIntf->callConv == ICC_GENERIC_METHOD || func->sysFuncIntf->callConv == ICC_GENERIC_METHOD_RETURNINMEM;
 
-	if(((func->sysFuncIntf->hostReturnSize >= 1 && !func->sysFuncIntf->hostReturnInMemory) || isGeneric)
-	 	&& !(func->returnType.IsObject() && !func->returnType.IsReference()) && acceptReturn ) {
+	if(acceptReturn) {
+		if(((func->sysFuncIntf->hostReturnSize >= 1 && !func->sysFuncIntf->hostReturnInMemory) || isGeneric)
+	 		&& !(func->returnType.IsObject() && !func->returnType.IsReference()))
+		{
 
 #ifdef JIT_64
-		as<asQWORD>(ebx) = as<asQWORD>(*ebp + offsetof(asSVMRegisters,valueRegister));
+			as<asQWORD>(ebx) = as<asQWORD>(*ebp + offsetof(asSVMRegisters,valueRegister));
 #else
-		ebx = *ebp + offsetof(asSVMRegisters,valueRegister);
+			ebx = *ebp + offsetof(asSVMRegisters,valueRegister);
+#endif
+		}
+	}
+	else {
+#ifndef JIT_64
+		pax = as<int>(*esp + local::regCopy);
+		as<int>(*ebp + offsetof(asSVMRegisters,valueRegister) + 4) = pax;
 #endif
 	}
 
