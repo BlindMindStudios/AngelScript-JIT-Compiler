@@ -232,7 +232,8 @@ enum SysCallFlags {
 	SC_Safe = 0x01,
 	SC_ValidObj = 0x02,
 	SC_NoSuspend = 0x04,
-	SC_FastFPU = 0x08
+	SC_FastFPU = 0x08,
+	SC_NoReturn = 0x10,
 };
 
 struct SystemCall {
@@ -243,6 +244,7 @@ struct SystemCall {
 	bool callIsSafe;
 	bool checkNullObj;
 	bool handleSuspend;
+	bool acceptReturn;
 	std::function<void(JumpType)> returnHandler;
 
 	SystemCall(Processor& CPU, FloatingPointUnit& FPU,
@@ -598,6 +600,11 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		cpu.call_stdcall((void*)callInterfaceMethod,"rp", &arg0, func);
 		//This returns the asCScriptFunction* in pax
 
+		pax &= pax;
+		auto okay = cpu.prep_short_jump(NotZero);
+		ReturnFromScriptCall();
+		cpu.end_short_jump(okay);
+
 		DynamicJitScriptCall();
 	};
 
@@ -615,7 +622,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 		pax &= pax;
 		auto okay = cpu.prep_short_jump(NotZero);
-		Return(false);
+		ReturnFromScriptCall();
 		cpu.end_short_jump(okay);
 
 		DynamicJitScriptCall();
@@ -1753,7 +1760,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				auto p = cpu.prep_short_jump(Zero);
 
 				if(beh->release) {
-					unsigned callFlags = SC_ValidObj;
+					unsigned callFlags = SC_ValidObj | SC_NoReturn;
 					if((flags & JIT_FAST_REFCOUNT) != 0)
 						callFlags |= SC_NoSuspend | SC_Safe;
 
@@ -1869,7 +1876,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				arg1 = as<void*>(*esi);
 				as<void*>(*esp + local::object1) = arg1;
 
-				unsigned callFlags = SC_ValidObj;
+				unsigned callFlags = SC_ValidObj | SC_NoReturn;
 				if((flags & JIT_FAST_REFCOUNT) != 0)
 					callFlags |= SC_NoSuspend | SC_Safe;
 
@@ -2976,6 +2983,8 @@ void stdcall callScriptFunction(asIScriptContext* ctx, asCScriptFunction* func) 
 asCScriptFunction* stdcall callInterfaceMethod(asIScriptContext* ctx, asCScriptFunction* func) {
 	asCContext* context = (asCContext*)ctx;
 	context->CallInterfaceMethod(func);
+	if(context->m_status != asEXECUTION_ACTIVE)
+		return 0;
 	return context->m_currentFunction;
 }
 
@@ -3035,6 +3044,7 @@ void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointe
 	callIsSafe = ((callFlags & SC_Safe) != 0);
 	checkNullObj = ((callFlags & SC_ValidObj) == 0);
 	handleSuspend = ((callFlags & SC_NoSuspend) == 0);
+	acceptReturn = ((callFlags & SC_NoReturn) == 0);
 
 	auto* sys = func->sysFuncIntf;
 #ifdef JIT_PRINT_UNHANDLED_CALLS
@@ -3248,7 +3258,8 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			arg0 = as<void*>(*esi);
 		else
 			arg0 = as<void*>(*esi + sizeof(asPWORD));
-		as<void*>(*esp + local::retPointer) = arg0;
+		if(acceptReturn)
+			as<void*>(*esp + local::retPointer) = arg0;
 		retPointer = true;
 		argOffset += sizeof(void*);
 
@@ -3527,74 +3538,79 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		}
 		else {
 			//Recover ret pointer
-			temp = as<void*>(*esp + local::retPointer);
+			if(acceptReturn) {
+				temp = as<void*>(*esp + local::retPointer);
 
-			//Store value
-			if(!func->hostReturnInMemory) {
-				if(func->hostReturnFloat) {
-					if(func->hostReturnSize == 1) {
-						as<float>(*temp) = as<float>(xmm0);
-					}
-					else if(func->hostReturnSize == 2) {
-						as<double>(*temp) = as<double>(xmm0);
-					}
-					else if(func->hostReturnSize == 3) {
-						as<double>(*temp) = as<double>(xmm0);
-						temp += 8;
-						as<float>(*temp) = as<float>(xmm1);
-					}
-					else if(func->hostReturnSize == 4) {
-						as<double>(*temp) = as<double>(xmm0);
-						temp += 8;
-						as<double>(*temp) = as<double>(xmm1);
+				//Store value
+				if(!func->hostReturnInMemory) {
+					if(func->hostReturnFloat) {
+						if(func->hostReturnSize == 1) {
+							as<float>(*temp) = as<float>(xmm0);
+						}
+						else if(func->hostReturnSize == 2) {
+							as<double>(*temp) = as<double>(xmm0);
+						}
+						else if(func->hostReturnSize == 3) {
+							as<double>(*temp) = as<double>(xmm0);
+							temp += 8;
+							as<float>(*temp) = as<float>(xmm1);
+						}
+						else if(func->hostReturnSize == 4) {
+							as<double>(*temp) = as<double>(xmm0);
+							temp += 8;
+							as<double>(*temp) = as<double>(xmm1);
+						}
+						else {
+							throw "Not supported.";
+						}
 					}
 					else {
-						throw "Not supported.";
+						if(func->hostReturnSize == 1) {
+							as<asDWORD>(*temp) = as<asDWORD>(eax);
+						}
+						else if(func->hostReturnSize == 2) {
+							as<asQWORD>(*temp) = as<asQWORD>(eax);
+						}
+						else if(func->hostReturnSize == 3) {
+							as<asQWORD>(*temp) = as<asQWORD>(eax);
+							temp += 8;
+							as<asDWORD>(*temp) = as<asDWORD>(edx);
+						}
+						else if(func->hostReturnSize == 4) {
+							as<asQWORD>(*temp) = as<asQWORD>(eax);
+							temp += 8;
+							as<asQWORD>(*temp) = as<asQWORD>(edx);
+						}
+						else {
+							throw "Not supported.";
+						}
 					}
 				}
-				else {
-					if(func->hostReturnSize == 1) {
-						as<asDWORD>(*temp) = as<asDWORD>(eax);
-					}
-					else if(func->hostReturnSize == 2) {
-						as<asQWORD>(*temp) = as<asQWORD>(eax);
-					}
-					else if(func->hostReturnSize == 3) {
-						as<asQWORD>(*temp) = as<asQWORD>(eax);
-						temp += 8;
-						as<asDWORD>(*temp) = as<asDWORD>(edx);
-					}
-					else if(func->hostReturnSize == 4) {
-						as<asQWORD>(*temp) = as<asQWORD>(eax);
-						temp += 8;
-						as<asQWORD>(*temp) = as<asQWORD>(edx);
-					}
-					else {
-						throw "Not supported.";
-					}
+
+				//Technically need to clear the objectRegister
+				//However, anything that tries to read this when it isn't valid is making a mistake
+				//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
+				int destruct = sFunc->returnType.GetObjectType()->beh.destruct;
+				if(destruct > 0) {
+					asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
+
+					Register arg0 = as<void*>(cpu.intArg64(0, 0));
+					arg0 = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
+					eax = as<int>(*arg0+offsetof(asCContext,m_status));
+					eax == (int)asEXECUTION_EXCEPTION;
+					auto noError = cpu.prep_short_jump(NotEqual);
+
+					cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &temp, destructFunc);
+
+					cpu.end_short_jump(noError);
 				}
 			}
-
-			//Technically need to clear the objectRegister
-			//However, anything that tries to read this when it isn't valid is making a mistake
-			//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
-			int destruct = sFunc->returnType.GetObjectType()->beh.destruct;
-			if(destruct) {
-				asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
-
-				Register arg0 = as<void*>(cpu.intArg64(0, 0));
-				arg0 = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
-				eax = as<int>(*arg0+offsetof(asCContext,m_status));
-				eax == (int)asEXECUTION_EXCEPTION;
-				auto noError = cpu.prep_short_jump(NotEqual);
-
-				cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &temp, destructFunc);
-
-				cpu.end_short_jump(noError);
+			else if(sFunc->returnType.GetObjectType()->beh.destruct > 0) {
+				throw "Destructible returns not permitted here."; //Reference counting and deletion
 			}
 		}
 	}
-	else if(func->hostReturnSize > 0) {
+	else if(func->hostReturnSize > 0 && acceptReturn) {
 		if(func->hostReturnFloat) {
 			Register ret = cpu.floatReturn64();
 			if(func->hostReturnSize == 1) {
@@ -3629,10 +3645,16 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 
 	if(sFunc->returnType.IsObject() && !sFunc->returnType.IsReference()) {
 		if(sFunc->returnType.IsObjectHandle()) {
+			if(!acceptReturn) {
+				if(func->returnAutoHandle)
+					throw "Auto handle returns not permitted here."; //Reference counting and deletion
+				return;
+			}
+
 			as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = eax;
 
 			//Add reference for returned auto handle
-			if( func->returnAutoHandle ) {
+			if(func->returnAutoHandle) {
 				eax &= eax;
 				auto noGrab = cpu.prep_short_jump(Zero);
 				
@@ -3645,6 +3667,12 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 			}
 		}
 		else {
+			if(!acceptReturn) {
+				if(sFunc->DoesReturnOnStack() && sFunc->returnType.GetObjectType()->beh.destruct > 0)
+					throw "Destructible returns not permitted here."; //Reference counting and deletion
+				return;
+			}
+
 			//Recover ret pointer
 			ecx = as<void*>(*esp + local::retPointer);
 
@@ -3664,7 +3692,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 				//However, anything that tries to read this when it isn't valid is making a mistake
 				//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
 				int destruct = sFunc->returnType.GetObjectType()->beh.destruct;
-				if(destruct) {
+				if(destruct > 0) {
 					asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
 
 					edx = as<void*>(*ebp+offsetof(asSVMRegisters,ctx));
@@ -3683,7 +3711,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 			}
 		}
 	}
-	else if(func->hostReturnSize > 0) {
+	else if(func->hostReturnSize > 0 && acceptReturn) {
 		if(func->hostReturnFloat) {
 			if(func->hostReturnSize == 1) {
 				esp -= cpu.pushSize();
@@ -3719,7 +3747,8 @@ void SystemCall::call_stdcall(asSSystemFunctionInterface* func, asCScriptFunctio
 	//Copy out retPointer; will be pushed normally as an argument in correct order
 	if(sFunc->DoesReturnOnStack()) {
 		eax = as<void*>(*esi);
-		as<void*>(*esp + local::retPointer) = eax;
+		if(acceptReturn)
+			as<void*>(*esp + local::retPointer) = eax;
 		lastArg += 1; popCount += sizeof(asDWORD);
 	}
 
@@ -3748,7 +3777,8 @@ void SystemCall::call_cdecl(asSSystemFunctionInterface* func, asCScriptFunction*
 	//Copy out retPointer; will be pushed normally as an argument in correct order
 	if(sFunc->DoesReturnOnStack()) {
 		eax = as<void*>(*esi);
-		as<void*>(*esp + local::retPointer) = eax;
+		if(acceptReturn)
+			as<void*>(*esp + local::retPointer) = eax;
 		lastArg += 1; popCount += sizeof(asDWORD);
 	}
 
@@ -3793,7 +3823,8 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 
 		//Copy out retPointer
 		edx = as<void*>(*esi + (firstArg * sizeof(asDWORD)));
-		as<void*>(*esp + local::retPointer) = edx;
+		if(acceptReturn)
+			as<void*>(*esp + local::retPointer) = edx;
 
 		firstArg += 1; lastArg += 1;
 	}
@@ -3894,7 +3925,8 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	//Get return pointer
 	if(sFunc->DoesReturnOnStack()) {
 		edx = as<void*>(*esi+(firstArg * sizeof(asDWORD)));
-		as<void*>(*esp + local::retPointer) = edx;
+		if(acceptReturn)
+			as<void*>(*esp + local::retPointer) = edx;
 		firstArg += 1; lastArg += 1;
 	}
 
