@@ -95,8 +95,12 @@ CodePage::CodePage(unsigned int Size, void* requestedStart) : used(0), final(fal
 	if(Size % minPageSize != 0)
 		pages += 1;
 
+	size_t reqptr = (size_t)requestedStart;
+	if(reqptr % minPageSize != 0)
+		reqptr -= (reqptr % minPageSize);
+
 	page = mmap(
-		requestedStart,
+		(void*)reqptr,
 		Size,
 		PROT_READ | PROT_WRITE | PROT_EXEC,
 		MAP_ANONYMOUS | MAP_PRIVATE,
