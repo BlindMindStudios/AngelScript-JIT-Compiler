@@ -182,11 +182,15 @@ private:
 struct Processor {
 	//Pointer to the location for the next opcode
 	byte* op;
+	byte* pageStart;
 	//The current mode of operation, in bits
 	// e.g. 32 bits for x86, indicating that operations should treat addresses as if they were unsigned integers
 	unsigned bitMode, lastBitMode;
 	//The number of bytes currently on the stack that we are responsible for
 	unsigned stackDepth;
+	//Reserved jump space
+	unsigned jumpSpace;
+	byte* jumpPtr;
 
 	//Initializes the processor to point to the active page of the code page
 	//Optionally takes a bitMode override (defaults to the same bitMode as the exe)
@@ -514,7 +518,7 @@ struct Register {
 	
 	void operator&=(unsigned long long mask);
 	void operator&=(MemAddress address);
-	void operator&=(Register& other);
+	void operator&=(Register other);
 	
 	void operator^=(MemAddress address);
 	void operator^=(Register& other);

@@ -350,15 +350,21 @@ void Processor::call_stdcall(void* func, const char* args, ...) {
 
 Processor::Processor(CodePage& codePage, unsigned defaultBitMode ) {
 	op = codePage.getActivePage();
+	pageStart = op;
 	bitMode = defaultBitMode;
 	lastBitMode = bitMode;
 	stackDepth = pushSize();
+	jumpSpace = 0;
 }
 
 void Processor::migrate(CodePage& prevPage, CodePage& newPage) {
 	jump(Jump,newPage.getActivePage());
+	jumpPtr = op;
+	op += jumpSpace;
 	prevPage.markUsedAddress((void*)op);
 	op = newPage.getActivePage();
+	pageStart = op;
+	jumpSpace = 0;
 }
 
 template<>
@@ -545,15 +551,36 @@ void* Processor::prep_long_jump(JumpType type) {
 	*this << longJumpCodes[type];
 	void* ret = (void*)op;
 	*this << (int)0;
+	jumpSpace += 16;
 	return ret;
 }
 
 void Processor::end_long_jump(void* p) {
 	volatile byte* jumpFrom = (volatile byte*)p;
+	bool isSamePage = (size_t)jumpFrom >= (size_t)pageStart && (size_t)jumpFrom < (size_t)op;
 	int64_t offset = ((size_t)op - (size_t)jumpFrom) - 4;
-	if(offset < (int64_t)INT_MIN || offset > (int64_t)INT_MAX)
-		throw "Long jump too long.";
+	if(offset < (int64_t)INT_MIN || offset > (int64_t)INT_MAX) {
+		if(isSamePage)
+			throw "Inside-page long jump too long. This should never ever happen, somebody screwed the pooch.";
+		Register reg(*this, R11, sizeof(void*));
+		auto* prevOp = op;
+		op = jumpPtr;
+
+		reg = (void*)prevOp;
+		*this << reg.prefix(EX_4) << '\xFF' << reg.modrm(EX_4);
+
+		offset = ((size_t)jumpPtr - (size_t)jumpFrom) - 4;
+		if(offset < (int64_t)INT_MIN || offset > (int64_t)INT_MAX)
+			throw "Multi-page drifting! Can't recover from this.";
+		*(volatile int*)jumpFrom = (int)offset;
+
+		jumpPtr = op;
+		op = prevOp;
+		return;
+	}
 	*(volatile int*)jumpFrom = (int)offset;
+	if(isSamePage)
+		jumpSpace -= 16;
 }
 
 void Processor::jump(JumpType type, volatile byte* dest) {
@@ -561,9 +588,9 @@ void Processor::jump(JumpType type, volatile byte* dest) {
 	if(offset >= CHAR_MIN && offset <= CHAR_MAX)
 		*this << shortJumpCodes[type] << (char)offset;
 	else if (offset > INT_MAX || offset < INT_MIN) {
-		Register eax(*this, EAX);
-		eax = (void*)dest;
-		jump(eax);
+		Register reg(*this, R11, sizeof(void*));
+		reg = (void*)dest;
+		jump(reg);
 	}
 	else if(type == Jump)
 		*this << longJumpCodes[Jump] << (int)(offset-3); //Long jump is 3 bytes larger, jump is from the end of the full opcode
@@ -1040,7 +1067,7 @@ void Register::operator&=(unsigned long long mask) {
 	}
 }
 
-void Register::operator&=(Register& other) {
+void Register::operator&=(Register other) {
 	switch(getBitMode()) {
 	case 8:
 		cpu << prefix(other) << '\x20' << modrm(other.code); break;

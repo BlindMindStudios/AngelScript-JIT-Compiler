@@ -143,6 +143,42 @@ void directConvert(F* from, T* to) {
 }
 #endif
 
+void fpow_wrapper(float* base, float* exponent, bool* overflow, float* ret) {
+	float r = pow(*base, *exponent);
+	bool over = (r == float(HUGE_VAL));
+	*overflow = over;
+	if(!over)
+		*ret = r;
+}
+
+void dpow_wrapper(double* base, double* exponent, bool* overflow, double* ret) {
+	double r = pow(*base, *exponent);
+	bool over = (r == HUGE_VAL);
+	*overflow = over;
+	if(!over)
+		*ret = r;
+}
+
+void dipow_wrapper(double* base, int exponent, bool* overflow, double* ret) {
+	double r = pow(*base, exponent);
+	bool over = (r == HUGE_VAL);
+	*overflow = over;
+	if(!over)
+		*ret = r;
+}
+
+void i64pow_wrapper(asINT64* base, asINT64* exponent, bool* overflow, asINT64* ret) {
+	auto r = as_powi64(*base, *exponent, *overflow);
+	if(!*overflow)
+		*ret = r;
+}
+
+void u64pow_wrapper(asQWORD* base, asQWORD* exponent, bool* overflow, asQWORD* ret) {
+	auto r = as_powu64(*base, *exponent, *overflow);
+	if(!*overflow)
+		*ret = r;
+}
+
 float stdcall fmod_wrapper_f(float* div, float* mod) {
 	return fmod(*div, *mod);
 }
@@ -326,9 +362,11 @@ const unsigned pIsSystem = 3 * sizeof(void*);
 const unsigned retPointer = 4 * sizeof(void*);
 //Copy of value register in 32 bit mode when returns are being ignored, not used alongside retPointer
 const unsigned regCopy = 4 * sizeof(void*);
-//Use in REFCPY
+//Used in REFCPY
 const unsigned object1 = 0;
 const unsigned object2 = sizeof(void*);
+//Used in power calls to check for overflows
+const unsigned overflowRet = 0;
 };
 
 const unsigned functionReserveSpace = 5 * sizeof(void*);
@@ -697,7 +735,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 	auto check_space = [&](unsigned bytes) {
 		unsigned remaining = activePage->getFreeSize() - (unsigned)(cpu.op - byteStart);
-		if(remaining < bytes) {
+		if(remaining < bytes + cpu.jumpSpace) {
 			CodePage* newPage = new CodePage(codePageSize, ((char*)activePage->page + activePage->size));
 
 			cpu.migrate(*activePage, *newPage);
@@ -2832,6 +2870,83 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				as<void*>(*esi) = pax;
 				nextEAX = EAX_Stack;
 			} break;
+		case asBC_POWi:
+			{
+				edx.copy_address(*esp+local::overflowRet);
+				MemAddress base(*edi-offset1);
+				MemAddress exp(*edi-offset2);
+				cpu.call_cdecl((void*)as_powi, "mmr", &base, &exp, &edx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+				as<int>(*edi-offset0) = eax;
+			} break;
+		case asBC_POWu:
+			{
+				edx.copy_address(*esp+local::overflowRet);
+				MemAddress base(*edi-offset1);
+				MemAddress exp(*edi-offset2);
+				cpu.call_cdecl((void*)as_powu, "mmr", &base, &exp, &edx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+				as<int>(*edi-offset0) = eax;
+			} break;
+		case asBC_POWf:
+			{
+				eax.copy_address(*edi-offset1);
+				ecx.copy_address(*edi-offset2);
+				edx.copy_address(*esp+local::overflowRet);
+				ebx.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)fpow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+			} break;
+		case asBC_POWd:
+			{
+				eax.copy_address(*edi-offset1);
+				ecx.copy_address(*edi-offset2);
+				edx.copy_address(*esp+local::overflowRet);
+				ebx.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)dpow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+			} break;
+		case asBC_POWdi:
+			{
+				eax.copy_address(*edi-offset1);
+				edx.copy_address(*esp+local::overflowRet);
+				ebx.copy_address(*edi-offset0);
+				MemAddress exp(*edi-offset2);
+				cpu.call_cdecl((void*)dipow_wrapper, "rmrr", &eax, &exp, &edx, &ebx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+			} break;
+		case asBC_POWi64:
+			{
+				eax.copy_address(*edi-offset1);
+				ecx.copy_address(*edi-offset2);
+				edx.copy_address(*esp+local::overflowRet);
+				ebx.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)i64pow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+			} break;
+		case asBC_POWu64:
+			{
+				eax.copy_address(*edi-offset1);
+				ecx.copy_address(*edi-offset2);
+				edx.copy_address(*esp+local::overflowRet);
+				ebx.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)u64pow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+				ecx = as<char>(*esp + local::overflowRet);
+				as<char>(ecx) &= as<char>(ecx);
+				ReturnCondition(NotZero);
+			} break;
 		default:
 			//printf("Unhandled op: %i\n", op);
 			Return(true);
@@ -2999,6 +3114,9 @@ asCScriptFunction* stdcall callBoundFunction(asIScriptContext* ctx, unsigned sho
 		return 0;
 	}
 	asCScriptFunction* func = engine->GetScriptFunction(funcID);
+	//Imported functions can be bound to non-script functions; we just exit to the vm to handle these for now
+	if(func->funcType != asFUNC_SCRIPT)
+		return 0;
 	context->CallScriptFunction(func);
 	if(context->m_status != asEXECUTION_ACTIVE)
 		return 0;
@@ -3893,7 +4011,7 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	call_entry(func,sFunc);
 
 	int firstArg = 0, lastArg = func->paramSize, argBytes;
-	bool popThis = false;
+	bool popThis = false, returnPointer = false;
 
 	//Check object pointer for nulls
 	if(!func->objForThiscall) {
@@ -3922,7 +4040,6 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	}
 
 	argBytes = (lastArg-firstArg) * cpu.pushSize();
-	cpu.call_thiscall_prep(argBytes);
 
 	//Get return pointer
 	if(sFunc->DoesReturnOnStack()) {
@@ -3930,8 +4047,10 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 		if(acceptReturn)
 			as<void*>(*esp + local::retPointer) = edx;
 		firstArg += 1; lastArg += 1;
+		argBytes += sizeof(asDWORD);
 	}
 
+	cpu.call_thiscall_prep(argBytes);
 	for(int i = lastArg-1; i >= firstArg; --i)
 		cpu.push(*esi+(i*sizeof(asDWORD)));
 
@@ -3950,6 +4069,7 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 		}
 	}
 	else {
+		returnPointer = true;
 		if(func->objForThiscall) {
 			ecx = func->objForThiscall;
 			cpu.call_thiscall_this_mem(ecx, edx);
@@ -3965,7 +4085,7 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	}
 
 	cpu.call((void*)func->func);
-	cpu.call_thiscall_end(argBytes);
+	cpu.call_thiscall_end(argBytes, returnPointer);
 
 	unsigned popCount = func->paramSize * sizeof(asDWORD);
 	if(popThis)

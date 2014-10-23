@@ -265,9 +265,11 @@ void Processor::call_stdcall(void* func, const char* args, ...) {
 
 Processor::Processor(CodePage& codePage, unsigned defaultBitMode ) {
 	op = codePage.getActivePage();
+	pageStart = op;
 	bitMode = defaultBitMode;
 	lastBitMode = bitMode;
 	stackDepth = 4;
+	jumpSpace = 0;
 }
 
 void Processor::migrate(CodePage& prevPage, CodePage& newPage) {
@@ -878,7 +880,7 @@ void Register::operator&=(unsigned long long mask) {
 	}
 }
 
-void Register::operator&=(Register& other) {
+void Register::operator&=(Register other) {
 	switch(getBitMode()) {
 	case 8:
 		cpu << '\x20' << mod_rm(other.code,REG,code); break;
