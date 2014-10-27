@@ -1797,7 +1797,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				//Check the pointer to see if it's already zero
 				arg1 = as<void*>(*edi-offset0);
 				arg1 &= arg1;
-				auto p = cpu.prep_short_jump(Zero);
+				auto p = cpu.prep_long_jump(Zero);
 
 				if(beh->release) {
 					unsigned callFlags = SC_ValidObj | SC_NoReturn;
@@ -1833,7 +1833,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				pax ^= pax;
 				as<void*>(*edi-offset0) = pax;
 
-				cpu.end_short_jump(p);
+				cpu.end_long_jump(p);
 			}
 			else {
 				//Null out pointer on the stack
