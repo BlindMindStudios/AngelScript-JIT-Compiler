@@ -2503,10 +2503,9 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			eax = *edi-offset1;
 			eax += *edi-offset2;
 			*edi-offset0 = eax;
-			eax = *edi-offset1+4;
-			auto p = cpu.prep_short_jump(NotOverflow);
-			++eax;
-			cpu.end_short_jump(p);
+			eax.setIf(Carry);
+			eax.copy_zeroing(eax);
+			eax += *edi-offset1+4;
 			eax += *edi-offset2+4;
 			*edi-offset0+4 = eax;
 #endif
@@ -2522,7 +2521,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			eax -= *edi-offset2;
 			*edi-offset0 = eax;
 			eax = *edi-offset1+4;
-			auto p = cpu.prep_short_jump(NotOverflow);
+			auto p = cpu.prep_short_jump(NotCarry);
 			--eax;
 			cpu.end_short_jump(p);
 			eax -= *edi-offset2+4;
