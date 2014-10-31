@@ -1922,23 +1922,23 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				//Add reference to object 1, if not null
 				arg1 &= arg1;
-				auto prev = cpu.prep_short_jump(Zero);
+				auto prev = cpu.prep_long_jump(Zero);
 				{
 					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->addref);
 					sysCall.callSystemFunction(func, &arg1, callFlags);
 				}
-				cpu.end_short_jump(prev);
+				cpu.end_long_jump(prev);
 
 				//Release reference from object 2, if not null
 				arg1 = as<void*>(*esp+local::object2);
 				arg1 = as<void*>(*arg1);
 				arg1 &= arg1;
-				auto dest = cpu.prep_short_jump(Zero);
+				auto dest = cpu.prep_long_jump(Zero);
 				{
 					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release);
 					sysCall.callSystemFunction(func, &arg1, callFlags);
 				}
-				cpu.end_short_jump(dest);
+				cpu.end_long_jump(dest);
 
 				pax = as<void*>(*esp + local::object1);
 				pdx = as<void*>(*esp + local::object2);
