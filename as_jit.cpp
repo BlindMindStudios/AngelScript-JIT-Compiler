@@ -216,7 +216,7 @@ void stdcall i64_srl(unsigned long long* a, asDWORD* b, unsigned long long* r) {
 }
 
 void stdcall i64_sra(long long* a, asDWORD* b, long long* r) {
-	*r = *a << *b;
+	*r = *a >> *b;
 }
 
 int stdcall cmp_int64(long long* a, long long* b) {
