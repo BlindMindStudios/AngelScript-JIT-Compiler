@@ -109,6 +109,8 @@ void* stdcall engineAlloc(asCScriptEngine* engine, asCObjectType* type);
 
 void stdcall engineRelease(asCScriptEngine* engine, void* memory, asCScriptFunction* release);
 
+void stdcall engineListFree(asCScriptEngine* engine, asCObjectType* objType, void* memory);
+
 void stdcall engineDestroyFree(asCScriptEngine* engine, void* memory, asCScriptFunction* destruct);
 
 void stdcall engineFree(asCScriptEngine* engine, void* memory);
@@ -212,7 +214,7 @@ void stdcall i64_sll(unsigned long long* a, asDWORD* b, unsigned long long* r) {
 }
 
 void stdcall i64_srl(unsigned long long* a, asDWORD* b, unsigned long long* r) {
-	*r = *a << *b;
+	*r = *a >> *b;
 }
 
 void stdcall i64_sra(long long* a, asDWORD* b, long long* r) {
@@ -270,6 +272,7 @@ enum SysCallFlags {
 	SC_NoSuspend = 0x04,
 	SC_FastFPU = 0x08,
 	SC_NoReturn = 0x10,
+	SC_Simple = 0x20,
 };
 
 struct SystemCall {
@@ -281,6 +284,7 @@ struct SystemCall {
 	bool checkNullObj;
 	bool handleSuspend;
 	bool acceptReturn;
+	bool isSimple;
 	std::function<void(JumpType)> returnHandler;
 
 	SystemCall(Processor& CPU, FloatingPointUnit& FPU,
@@ -304,6 +308,7 @@ private:
 	void call_cdecl(asSSystemFunctionInterface* func, asCScriptFunction* sFunc);
 	void call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunction* sFunc, Register* objPointer, bool last);
 	void call_thiscall(asSSystemFunctionInterface* func, asCScriptFunction* sFunc, Register* objPointer);
+	void call_simple(Register& objPointer, asCScriptFunction* func);
 
 	void call_64conv(asSSystemFunctionInterface* func, asCScriptFunction* sFunc, Register* objPointer, ObjectPosition pos);
 	
@@ -1673,6 +1678,12 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(asBC_INTARG(pOp));
 				sysCall.callSystemFunction(func);
 			} break;
+		case asBC_Thiscall1:
+			{
+				check_space(512);
+				asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(asBC_INTARG(pOp));
+				sysCall.callSystemFunction(func, 0, SC_ValidObj | SC_NoSuspend);
+			} break;
 		case asBC_CALLBND:
 			{
 				check_space(512);
@@ -1800,7 +1811,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				auto p = cpu.prep_long_jump(Zero);
 
 				if(beh->release) {
-					unsigned callFlags = SC_ValidObj | SC_NoReturn;
+					unsigned callFlags = SC_ValidObj | SC_NoReturn | SC_Simple;
 					if((flags & JIT_FAST_REFCOUNT) != 0)
 						callFlags |= SC_NoSuspend | SC_Safe;
 
@@ -1816,6 +1827,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 						(asCScriptEngine*)function->GetEngine(),
 						&arg1,
 						(asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->destruct) );
+				}
+				else if(objType->flags & asOBJ_LIST_PATTERN) {
+					as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp;
+					as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
+
+					cpu.call_stdcall((void*)engineListFree,"ppr",
+						(asCScriptEngine*)function->GetEngine(),
+						objType, &arg1);
 				}
 				else {
 					//Copy over registers to the vm in case the called functions observe the call stack
@@ -1916,7 +1935,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				arg1 = as<void*>(*esi);
 				as<void*>(*esp + local::object1) = arg1;
 
-				unsigned callFlags = SC_ValidObj | SC_NoReturn;
+				unsigned callFlags = SC_ValidObj | SC_NoReturn | SC_Simple;
 				if((flags & JIT_FAST_REFCOUNT) != 0)
 					callFlags |= SC_NoSuspend | SC_Safe;
 
@@ -2169,7 +2188,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			cpu.end_short_jump(notSigned);
 			}
 
-			ecx.divide_signed();
+			as<int>(ecx).divide_signed();
 
 			*edi-offset0 = eax;
 			break;
@@ -3078,6 +3097,11 @@ void stdcall engineRelease(asCScriptEngine* engine, void* memory, asCScriptFunct
 	engine->CallObjectMethod(memory, release->sysFuncIntf, release);
 }
 
+void stdcall engineListFree(asCScriptEngine* engine, asCObjectType* objType, void* memory) {
+	engine->DestroyList((asBYTE*)memory, objType);
+	engine->CallFree(memory);
+}
+
 void stdcall engineDestroyFree(asCScriptEngine* engine, void* memory, asCScriptFunction* destruct) {
 	engine->CallObjectMethod(memory, destruct->sysFuncIntf, destruct);
 	engine->CallFree(memory);
@@ -3124,13 +3148,15 @@ asCScriptFunction* stdcall callBoundFunction(asIScriptContext* ctx, unsigned sho
 
 void stdcall receiveObjectHandle(asIScriptContext* ctx, asCScriptObject* obj) {
 	asCContext* context = (asCContext*)ctx;
-	if(obj)
-		((asCScriptEngine*)context->GetEngine())->CallObjectMethod(obj, obj->objType->beh.addref);
+	if(obj) {
+		asCObjectType* objType = (asCObjectType*)obj->GetObjectType();
+		((asCScriptEngine*)context->GetEngine())->CallObjectMethod(obj, objType->beh.addref);
+	}
 	context->m_regs.objectRegister = obj;
 }
 
 asCScriptObject* stdcall castObject(asCScriptObject* obj, asCObjectType* to) {
-	asCObjectType *from = obj->objType;
+	asCObjectType* from = (asCObjectType*)obj->GetObjectType();
 	if( from->DerivesFrom(to) || from->Implements(to) ) {
 		obj->AddRef();
 		return obj;
@@ -3164,6 +3190,7 @@ void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointe
 	checkNullObj = ((callFlags & SC_ValidObj) == 0);
 	handleSuspend = ((callFlags & SC_NoSuspend) == 0);
 	acceptReturn = ((callFlags & SC_NoReturn) == 0);
+	isSimple = ((callFlags & SC_Simple) != 0);
 
 	auto* sys = func->sysFuncIntf;
 #ifdef JIT_PRINT_UNHANDLED_CALLS
@@ -3175,11 +3202,19 @@ void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointe
 	};
 #endif
 
+	bool hasAutoHandles = false;
+	for(unsigned i = 0, cnt = sys->paramAutoHandles.GetLength(); i < cnt; ++i) {
+		if(sys->paramAutoHandles[i]) {
+			hasAutoHandles = true;
+			break;
+		}
+	}
+
 #ifdef JIT_64
-	if( sys->takesObjByVal || sys->hasAutoHandles || sys->hostReturnSize > 4 ||
+	if( sys->takesObjByVal || hasAutoHandles || sys->hostReturnSize > 4 ||
 		(sys->paramAutoHandles.GetLength() != 0 && sys->paramSize == 0) )
 #else
-	if( sys->takesObjByVal || sys->hasAutoHandles || sys->hostReturnSize > 2 ||
+	if( sys->takesObjByVal || hasAutoHandles || sys->hostReturnSize > 2 ||
 		(sys->paramAutoHandles.GetLength() != 0 && sys->paramSize == 0))
 #endif
 	{
@@ -3203,6 +3238,8 @@ void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointe
 			call_64conv(sys, func, objPointer, OP_First); break;
 		case ICC_THISCALL:
 		case ICC_THISCALL_RETURNINMEM:
+		case ICC_VIRTUAL_THISCALL:
+		case ICC_VIRTUAL_THISCALL_RETURNINMEM:
 #ifdef _MSC_VER
 			call_64conv(sys, func, objPointer, OP_This); break;
 #else
@@ -3220,6 +3257,9 @@ void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointe
 			call_cdecl_obj(sys, func, objPointer, true); break;
 		case ICC_CDECL_OBJFIRST:
 			call_cdecl_obj(sys, func, objPointer, false); break;
+		case ICC_VIRTUAL_THISCALL:
+		case ICC_VIRTUAL_THISCALL_RETURNINMEM:
+			call_viaAS(func, objPointer); break;
 #endif
 		case ICC_GENERIC_FUNC:
 		case ICC_GENERIC_FUNC_RETURNINMEM:
@@ -3227,8 +3267,6 @@ void SystemCall::callSystemFunction(asCScriptFunction* func, Register* objPointe
 		case ICC_GENERIC_METHOD_RETURNINMEM:
 			//call_generic(func, objPointer); break;
 		//break;
-		case ICC_VIRTUAL_THISCALL:
-			call_viaAS(func, objPointer); break;
 		default:
 			//Probably can't reach here, but handle it anyway
 #ifdef JIT_PRINT_UNHANDLED_CALLS
@@ -3332,6 +3370,9 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	unsigned argOffset = 0;
 	bool stackObject = false;
 
+	Register containingObj(cpu, EAX);
+	bool isVirtual = func->callConv == ICC_VIRTUAL_THISCALL || func->callConv == ICC_VIRTUAL_THISCALL_RETURNINMEM;
+
 	int intCount = 0;
 	int floatCount = 0;
 	int i = 0, a = 0;
@@ -3342,12 +3383,12 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	//'this' before 'return pointer' on MSVC
 	if(pos == OP_This) {
 		Register reg = as<void*>(cpu.intArg64(0, 0));
-		if(func->objForThiscall) {
-			reg = func->objForThiscall;
+		if(func->callConv >= ICC_THISCALL && func->auxiliary) {
+			reg = func->auxiliary;
 		}
 		else if(objPointer) {
 			reg = *objPointer;
-
+			
 			if(checkNullObj) {
 				reg &= reg;
 				returnHandler(Zero);
@@ -3365,6 +3406,8 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			}
 			reg += func->baseOffset;
 		}
+
+		containingObj.set_regCode(reg);
 
 		++intCount;
 		++a;
@@ -3450,23 +3493,27 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	cpu.call_cdecl_prep(stackBytes);
 
 	if(pos != OP_None && pos != OP_This) {
-		if(func->objForThiscall) {
+		if(func->callConv >= ICC_THISCALL && func->auxiliary) {
 			if(pos == OP_First) {
 				if(cpu.isIntArg64Register(firstPos, firstPos)) {
 					Register reg = as<void*>(cpu.intArg64(firstPos, firstPos));
-					reg = func->objForThiscall;
+					reg = func->auxiliary;
+					containingObj.set_regCode(reg);
 				}
 				else {
-					temp = func->objForThiscall;
+					temp = func->auxiliary;
+					containingObj.set_regCode(temp);
 				}
 			}
 			else if(pos == OP_Last) {
 				if(cpu.isIntArg64Register(intCount+1, a+1)) {
 					Register reg = as<void*>(cpu.intArg64(intCount+1, a+1));
-					reg = func->objForThiscall;
+					reg = func->auxiliary;
+					containingObj.set_regCode(reg);
 				}
 				else {
-					temp = func->objForThiscall;
+					temp = func->auxiliary;
+					containingObj.set_regCode(temp);
 					cpu.push(temp);
 				}
 			}
@@ -3476,23 +3523,30 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				*objPointer &= *objPointer;
 				returnHandler(Zero);
 			}
-
+		
 			if(pos == OP_First) {
 				if(cpu.isIntArg64Register(firstPos, firstPos)) {
 					Register reg = as<void*>(cpu.intArg64(firstPos, firstPos));
 					reg = as<void*>(*objPointer);
+					containingObj.set_regCode(reg);
 				}
 				else {
 					temp = *objPointer;
+					containingObj.set_regCode(temp);
 				}
 			}
 			else if(pos == OP_Last) {
 				if(cpu.isIntArg64Register(intCount+1, a+1)) {
 					Register reg = as<void*>(cpu.intArg64(intCount+1, a+1));
 					reg = as<void*>(*objPointer);
+					containingObj.set_regCode(reg);
 				}
 				else {
 					cpu.push(*objPointer);
+					if(isVirtual) {
+						temp = objPointer;
+						containingObj.set_regCode(temp);
+					}
 				}
 			}
 		}
@@ -3510,6 +3564,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					}
 
 					reg += func->baseOffset;
+					containingObj.set_regCode(reg);
 				}
 				else {
 					temp = as<void*>(*esi);
@@ -3520,6 +3575,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					}
 
 					temp += func->baseOffset;
+					containingObj.set_regCode(temp);
 				}
 			}
 			else if(pos == OP_Last) {
@@ -3533,6 +3589,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					}
 
 					reg += func->baseOffset;
+					containingObj.set_regCode(reg);
 				}
 				else {
 					temp = as<void*>(*esi);
@@ -3544,6 +3601,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 
 					temp += func->baseOffset;
 					cpu.push(temp);
+					containingObj.set_regCode(temp);
 				}
 			}
 
@@ -3625,7 +3683,33 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 	esp -= 32;
 #endif
 
-	cpu.call((void*)func->func);
+	if(isVirtual) {
+		//Look up pointer from vftable
+		if(containingObj.code == EAX)
+			throw "Virtual function resolver doesn't know object register.";
+
+		as<void*>(pax) = as<void*>(*containingObj);
+
+#ifdef __GNUC__
+		unsigned offset = ((size_t)func->func) >> 3;
+		offset *= sizeof(void*);
+
+		as<void*>(pax) += offset;
+		as<void*>(pax) = as<void*>(*pax);
+#endif
+#ifdef _MSC_VER
+		unsigned offset = ((size_t)func->func) >> 2;
+		offset *= sizeof(void*);
+
+		as<void*>(pax) += offset;
+		as<void*>(pax) = as<void*>(*pax);
+#endif
+
+		cpu.call(pax);
+	}
+	else {
+		cpu.call((void*)func->func);
+	}
 
 	cpu.call_cdecl_end(stackBytes, retOnStack);
 
@@ -3647,7 +3731,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				ret &= ret;
 				auto noGrab = cpu.prep_short_jump(Zero);
 				
-				int addref = sFunc->returnType.GetObjectType()->beh.addref;
+				int addref = sFunc->returnType.GetBehaviour()->addref;
 				asCScriptFunction* addrefFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(addref);
 
 				cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &ret, addrefFunc);
@@ -3709,7 +3793,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				//Technically need to clear the objectRegister
 				//However, anything that tries to read this when it isn't valid is making a mistake
 				//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
-				int destruct = sFunc->returnType.GetObjectType()->beh.destruct;
+				int destruct = sFunc->returnType.GetBehaviour()->destruct;
 				if(destruct > 0) {
 					asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
 
@@ -3724,7 +3808,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					cpu.end_short_jump(noError);
 				}
 			}
-			else if(sFunc->returnType.GetObjectType()->beh.destruct > 0) {
+			else if(sFunc->returnType.GetBehaviour()->destruct > 0) {
 				throw "Destructible returns not permitted here."; //Reference counting and deletion
 			}
 		}
@@ -3777,7 +3861,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 				eax &= eax;
 				auto noGrab = cpu.prep_short_jump(Zero);
 				
-				int addref = sFunc->returnType.GetObjectType()->beh.addref;
+				int addref = sFunc->returnType.GetBehaviour()->addref;
 				asCScriptFunction* addrefFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(addref);
 
 				cpu.call_stdcall((void*)engineCallMethod, "prp", sFunc->GetEngine(), &eax, addrefFunc);
@@ -3787,7 +3871,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 		}
 		else {
 			if(!acceptReturn) {
-				if(sFunc->DoesReturnOnStack() && sFunc->returnType.GetObjectType()->beh.destruct > 0)
+				if(sFunc->DoesReturnOnStack() && sFunc->returnType.GetBehaviour()->destruct > 0)
 					throw "Destructible returns not permitted here."; //Reference counting and deletion
 				return;
 			}
@@ -3810,7 +3894,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 				//Technically need to clear the objectRegister
 				//However, anything that tries to read this when it isn't valid is making a mistake
 				//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
-				int destruct = sFunc->returnType.GetObjectType()->beh.destruct;
+				int destruct = sFunc->returnType.GetBehaviour()->destruct;
 				if(destruct > 0) {
 					asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
 
@@ -3953,7 +4037,7 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 	if(objPointer) {
 		if(checkNullObj) {
 			*objPointer &= *objPointer;
-
+	
 			auto j = cpu.prep_short_jump(NotZero);
 				call_error();
 				returnHandler(Jump);
@@ -3982,11 +4066,12 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 	for(int i = lastArg-1; i >= firstArg; --i)
 		cpu.push(*esi+(i*sizeof(asDWORD)));
 
-	if(!last)
+	if(!last) {
 		if(objPointer)
 			cpu.push(*objPointer);
 		else
 			cpu.push(ecx);
+	}
 
 	//retPointer is always last thing pushed
 	if(sFunc->DoesReturnOnStack())
@@ -4013,7 +4098,7 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	bool popThis = false, returnPointer = false;
 
 	//Check object pointer for nulls
-	if(!func->objForThiscall) {
+	if(func->callConv < ICC_THISCALL || !func->auxiliary) {
 		if(objPointer) {
 			if(checkNullObj) {
 				*objPointer &= *objPointer;
@@ -4054,8 +4139,8 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 		cpu.push(*esi+(i*sizeof(asDWORD)));
 
 	if(!sFunc->DoesReturnOnStack()) {
-		if(func->objForThiscall) {
-			ecx = func->objForThiscall;
+		if(func->callConv >= ICC_THISCALL && func->auxiliary) {
+			ecx = func->auxiliary;
 			cpu.call_thiscall_this(ecx);
 		}
 		else if(objPointer) {
@@ -4069,8 +4154,8 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 	}
 	else {
 		returnPointer = true;
-		if(func->objForThiscall) {
-			ecx = func->objForThiscall;
+		if(func->callConv >= ICC_THISCALL && func->auxiliary) {
+			ecx = func->auxiliary;
 			cpu.call_thiscall_this_mem(ecx, edx);
 		}
 		else if(objPointer) {
@@ -4166,6 +4251,11 @@ void SystemCall::call_generic(asCScriptFunction* func, Register* objPointer) {
 }
 
 void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
+	if(isSimple && objPointer) {
+		call_simple(*objPointer, func);
+		return;
+	}
+
 	unsigned pBits = sizeof(void*) * 8;
 #ifdef JIT_64
 	Register esi(cpu,R13,pBits);
@@ -4183,15 +4273,17 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 	}
 #endif
 
+	if(objPointer) {
+		//Push the object pointer onto the script stack, the function will pop it
+		esi -= sizeof(void*);
+		as<void*>(*esi) = as<void*>(*objPointer);
+	}
+
 	//Copy state to VM state in case the call inspects the context
 	call_entry(func->sysFuncIntf,func);
 
 	MemAddress ctxPtr(as<void*>(*ebp + offsetof(asSVMRegisters,ctx)));
-
-	if(objPointer)
-		cpu.call_cdecl((void*)CallSystemFunction,"cmr",func->GetId(),&ctxPtr,objPointer);
-	else
-		cpu.call_cdecl((void*)CallSystemFunction,"cmp",func->GetId(),&ctxPtr,nullptr);
+	cpu.call_cdecl((void*)CallSystemFunction,"cm",func->GetId(),&ctxPtr);
 
 	//Pop the returned amount of dwords from the stack
 	esi.copy_address(*esi+pax*4);
@@ -4220,6 +4312,29 @@ void SystemCall::call_viaAS(asCScriptFunction* func, Register* objPointer) {
 	}
 
 	call_exit(func->sysFuncIntf);
+}
+
+void stdcall engineSimpleMethod(asCScriptEngine* engine, void* obj, asSSystemFunctionInterface* i, asCScriptFunction* func) {
+	engine->CallObjectMethod(obj, i, func);
+}
+
+void SystemCall::call_simple(Register& objPointer, asCScriptFunction* func) {
+	unsigned pBits = sizeof(void*) * 8;
+#ifdef JIT_64
+	Register esi(cpu,R13,pBits);
+#else
+	Register esi(cpu,ESI,pBits);
+#endif
+	Register ebp(cpu,EBP);
+
+	as<void*>(*ebp + offsetof(asSVMRegisters,programPointer)) = pOp;
+	as<void*>(*ebp + offsetof(asSVMRegisters,stackPointer)) = esi;
+
+	auto* sys = func->sysFuncIntf;
+
+	cpu.call_stdcall((void*)engineSimpleMethod,"prpp",
+		(asCScriptEngine*)func->GetEngine(),
+		&objPointer, sys, func);
 }
 
 void stdcall returnScriptFunction(asCContext* ctx) {

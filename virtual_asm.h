@@ -484,6 +484,11 @@ struct Register {
 	Register(Processor& CPU, RegCode Code);
 	Register(Processor& CPU, RegCode Code, unsigned BitModeOverride);
 
+	void set_regCode(Register& other) {
+		code = other.code;
+		bitMode = other.bitMode;
+	}
+
 	unsigned getBitMode() const;
 	unsigned getBitMode(const MemAddress& addr) const;
 

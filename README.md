@@ -4,12 +4,12 @@ A Just-In-Time Compiler for use with AngelScript.
 
 Currently supports x86 and x86_64 processors on both Windows (using MSVC 2010 or later) and Linux (using GCC 4.6.2 or later)
 
-Last made compatible with a version of 2.29 of the AngelScript library.
+Compatible with version of 2.31.0 of the AngelScript library.
 
-License
--------
+License (MIT)
+-------------
 
-Copyright (C) 2012-2014 Blind Mind Studios
+Copyright (C) 2012-2016 Blind Mind Studios
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 

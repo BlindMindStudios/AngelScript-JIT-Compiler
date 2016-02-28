@@ -370,7 +370,7 @@ void Processor::migrate(CodePage& prevPage, CodePage& newPage) {
 template<>
 Processor& Processor::operator<<(MemAddress addr) {
 	if(addr.absolute_address != 0) {
-		if((size_t)addr.absolute_address <= UINT_MAX) {
+		if((size_t)addr.absolute_address <= INT_MAX) {
 			//Normal 32 bit address needs a none sib byte
 			return *this << mod_rm(addr.other % 8, ADR, SIB) << sib(0x4, 0, ADDR) << (int)(size_t)addr.absolute_address;
 		}
@@ -432,7 +432,7 @@ Processor& Processor::operator<<(AddrPrefix pr) {
 	MemAddress& adr = pr.adr;
 
 	//64 bit absolute addresses need to mangle a register in order to work
-	if((size_t)adr.absolute_address > (size_t)UINT_MAX) {
+	if((size_t)adr.absolute_address > (size_t)INT_MAX) {
 		*this << '\x49' << '\xBB' << (uint64_t)adr.absolute_address;
 		adr.code = R11;
 	}
@@ -775,7 +775,7 @@ void MemAddress::operator|=(unsigned int value) {
 
 void MemAddress::operator=(void* value) {
 	bitMode = 64;
-	if((size_t)value < UINT_MAX) {
+	if((size_t)value < (size_t)INT_MAX) {
 		cpu << prefix() << '\xC7' << *this << (unsigned)(size_t)value;
 	}
 	else {
