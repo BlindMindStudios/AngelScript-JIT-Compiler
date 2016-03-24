@@ -46,6 +46,7 @@ static std::set<asCScriptFunction*> unhandledCalls;
 #endif
 
 const unsigned codePageSize = 65535 * 4;
+static const void* JUMP_DESTINATION = (void*)(size_t)0x1;
 
 #define offset0 (asBC_SWORDARG0(pOp)*sizeof(asDWORD))
 #define offset1 (asBC_SWORDARG1(pOp)*sizeof(asDWORD))
@@ -411,6 +412,28 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 	}
 	memset(jumpTable, 0, length * sizeof(void*));
 
+	//Do a first pass through the bytecode to mark all locations we are going to be jumping to,
+	//that way we can prevent running multi-op optimizations on them.
+	asDWORD* passOp = pOp;
+	while(passOp < end) {
+		asEBCInstr op = asEBCInstr(*(asBYTE*)passOp);
+		switch(op) {
+			case asBC_JMP:
+			case asBC_JLowZ:
+			case asBC_JZ:
+			case asBC_JLowNZ:
+			case asBC_JNZ:
+			case asBC_JS:
+			case asBC_JNS:
+			case asBC_JP:
+			case asBC_JNP: {
+				asDWORD* target = passOp + asBC_INTARG(passOp) + 2;
+				jumpTable[target - start] = (unsigned char*)JUMP_DESTINATION;
+			} break;
+		}
+		passOp += toSize(op);
+	}
+
 	//Get the active page, or create a new one if the current one is missing or too small (256 bytes for the entry and a few ops)
 	if(activePage == 0 || activePage->final || activePage->getFreeSize() < 256)
 		activePage = new CodePage(codePageSize, reinterpret_cast<void*>(&toSize));
@@ -706,7 +729,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			jumpData->next = jmp ? (FutureJump*)jmp : 0;
 			jmp = (byte*)jumpData;
 		}
-		else if(jmp != 0) {
+		else if(jmp != 0 && jmp != JUMP_DESTINATION) {
 			//Jump to code that already exists
 			cpu.jump(type, jmp);
 		}
@@ -727,7 +750,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			jumpData->next = jmp ? (FutureJump*)jmp : 0;
 			jmp = (byte*)jumpData;
 		}
-		else if(jmp != 0) {
+		else if(jmp != 0 && jmp != JUMP_DESTINATION) {
 			//Jump to code that already exists
 			cpu.jump(type, jmp);
 		}
@@ -771,18 +794,17 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		auto* futureJump = (FutureJump*)jumpTable[pOp - start];
 
 		//Handle jumps from earlier ops
-		//NOTE: We can only handle jumps to groups of ops (typically a line)
-		//		If AngelScript ever starts jumping to within these small groups of ops, there will be errors
 		if(futureJump) {
 			if(waitingForEntry && op != asBC_JitEntry) {
 				check_space(48);
 				jumpTable[pOp - start] = (unsigned char*)cpu.op;
-				Return(true);
 
-				do {
+				while(futureJump && futureJump != JUMP_DESTINATION) {
 					cpu.end_long_jump(futureJump->jump);
 					futureJump = futureJump->advance();
-				} while(futureJump);
+				}
+
+				Return(true);
 
 				pOp += toSize(op);
 				continue;
@@ -818,7 +840,7 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 #endif
 
 		//Handle jumps to code we hadn't made yet
-		while(futureJump) {
+		while(futureJump && futureJump != JUMP_DESTINATION) {
 			cpu.end_long_jump(futureJump->jump);
 			futureJump = futureJump->advance();
 		}
@@ -826,12 +848,12 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		//Multi-op optimization - special cases where specific sets of ops serve a common purpose
 		auto pNextOp = pOp + toSize(op);
 
-		if(pNextOp < end) {
+		if(pNextOp < end && jumpTable[pNextOp - start] == nullptr) {
 			auto nextOp = asEBCInstr(*(asBYTE*)pNextOp);
 
 			auto pThirdOp = pNextOp + toSize(nextOp);
 			auto thirdOp = asBC_MAXBYTECODE;
-			if(pThirdOp < end) {
+			if(pThirdOp < end && jumpTable[pThirdOp - start] == nullptr) {
 				thirdOp = asEBCInstr(*(asBYTE*)pThirdOp);
 
 				switch(op) {
@@ -1673,16 +1695,11 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 				as<asDWORD>(*esi) = (asDWORD)str.GetLength();
 			} break;
 		case asBC_CALLSYS:
-			{
-				check_space(512);
-				asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(asBC_INTARG(pOp));
-				sysCall.callSystemFunction(func);
-			} break;
 		case asBC_Thiscall1:
 			{
 				check_space(512);
 				asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(asBC_INTARG(pOp));
-				sysCall.callSystemFunction(func, 0, SC_ValidObj | SC_NoSuspend);
+				sysCall.callSystemFunction(func);
 			} break;
 		case asBC_CALLBND:
 			{
