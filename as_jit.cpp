@@ -286,10 +286,10 @@ struct SystemCall {
 	bool handleSuspend;
 	bool acceptReturn;
 	bool isSimple;
-	std::function<void(JumpType)> returnHandler;
+	std::function<void(JumpType,bool)> returnHandler;
 
 	SystemCall(Processor& CPU, FloatingPointUnit& FPU,
-		std::function<void(JumpType)> ConditionalReturn, asDWORD* const & bytecode, unsigned JitFlags)
+		std::function<void(JumpType,bool)> ConditionalReturn, asDWORD* const & bytecode, unsigned JitFlags)
 		: cpu(CPU), fpu(FPU), returnHandler(ConditionalReturn), pOp(bytecode), flags(0)
 	{
 		if((JitFlags & JIT_SYSCALL_NO_ERRORS) != 0)
@@ -559,7 +559,26 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 		}
 	};
 
-	SystemCall sysCall(cpu, fpu, ReturnCondition, pOp, flags);
+	auto ReturnPosition = [&](JumpType condition, bool nextOp) {
+		auto retBC = pOp;
+		if(nextOp) {
+			asEBCInstr op = (asEBCInstr)*(asBYTE*)pOp;
+			retBC += toSize(op);
+		}
+
+		if(condition != Zero) {
+			rarg = (void*)retBC;
+			cpu.jump(condition,ret_pos);
+		}
+		else {
+			auto* j = cpu.prep_short_jump(NotZero);
+			rarg = (void*)retBC;
+			cpu.jump(Jump,ret_pos);
+			cpu.end_short_jump(j);
+		}
+	};
+
+	SystemCall sysCall(cpu, fpu, ReturnPosition, pOp, flags);
 
 	volatile byte* script_ret = 0;
 	auto ReturnFromScriptCall = [&]() {
@@ -3351,7 +3370,7 @@ void SystemCall::call_exit(asSSystemFunctionInterface* func) {
 				edx = as<int>(*pax+offsetof(asCContext,m_status));
 				edx == (int)asEXECUTION_ACTIVE;
 				auto* activeContext = cpu.prep_short_jump(Equal);
-				returnHandler(Jump);
+				returnHandler(Jump, true);
 				cpu.end_short_jump(activeContext);
 			}
 
@@ -3361,7 +3380,7 @@ void SystemCall::call_exit(asSSystemFunctionInterface* func) {
 				auto* noSuspend = cpu.prep_short_jump(Zero);
 
 				as<int>(*pax+offsetof(asCContext,m_status)) = (int)asEXECUTION_SUSPENDED;
-				returnHandler(Jump);
+				returnHandler(Jump, true);
 
 				cpu.end_short_jump(noSuspend);
 			}
@@ -3408,7 +3427,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			
 			if(checkNullObj) {
 				reg &= reg;
-				returnHandler(Zero);
+				returnHandler(Zero, false);
 			}
 			reg += func->baseOffset;
 		}
@@ -3419,7 +3438,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 
 			if(checkNullObj) {
 				reg &= reg;
-				returnHandler(Zero);
+				returnHandler(Zero, false);
 			}
 			reg += func->baseOffset;
 		}
@@ -3538,7 +3557,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		else if(objPointer) {
 			if(checkNullObj) {
 				*objPointer &= *objPointer;
-				returnHandler(Zero);
+				returnHandler(Zero, false);
 			}
 		
 			if(pos == OP_First) {
@@ -3577,7 +3596,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					
 					if(checkNullObj) {
 						reg &= reg;
-						returnHandler(Zero);
+						returnHandler(Zero, false);
 					}
 
 					reg += func->baseOffset;
@@ -3588,7 +3607,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					
 					if(checkNullObj) {
 						temp &= temp;
-						returnHandler(Zero);
+						returnHandler(Zero, false);
 					}
 
 					temp += func->baseOffset;
@@ -3602,7 +3621,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 
 					if(checkNullObj) {
 						reg &= reg;
-						returnHandler(Zero);
+						returnHandler(Zero, false);
 					}
 
 					reg += func->baseOffset;
@@ -3613,7 +3632,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 					
 					if(checkNullObj) {
 						temp &= temp;
-						returnHandler(Zero);
+						returnHandler(Zero, false);
 					}
 
 					temp += func->baseOffset;
@@ -4057,7 +4076,7 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 	
 			auto j = cpu.prep_short_jump(NotZero);
 				call_error();
-				returnHandler(Jump);
+				returnHandler(Jump, false);
 			cpu.end_short_jump(j);
 		}
 
@@ -4071,7 +4090,7 @@ void SystemCall::call_cdecl_obj(asSSystemFunctionInterface* func, asCScriptFunct
 
 			auto j = cpu.prep_short_jump(NotZero);
 				call_error();
-				returnHandler(Jump);
+				returnHandler(Jump, false);
 			cpu.end_short_jump(j);
 		}
 
@@ -4121,7 +4140,7 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 				*objPointer &= *objPointer;
 				auto j = cpu.prep_short_jump(NotZero);
 					call_error();
-					returnHandler(Jump);
+					returnHandler(Jump, false);
 				cpu.end_short_jump(j);
 			}
 		}
@@ -4134,7 +4153,7 @@ void SystemCall::call_thiscall(asSSystemFunctionInterface* func, asCScriptFuncti
 				ecx &= ecx;
 				auto j = cpu.prep_short_jump(NotZero);
 					call_error();
-					returnHandler(Jump);
+					returnHandler(Jump, false);
 				cpu.end_short_jump(j);
 			}
 		}
