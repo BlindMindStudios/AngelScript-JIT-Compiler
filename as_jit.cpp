@@ -2926,10 +2926,15 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			} break;
 		case asBC_POWi:
 			{
-				edx.copy_address(*esp+local::overflowRet);
+#ifdef JIT_64
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+#else
+				Register arg2 = edx;
+#endif
+				arg2.copy_address(*esp+local::overflowRet);
 				MemAddress base(*edi-offset1);
 				MemAddress exp(*edi-offset2);
-				cpu.call_cdecl((void*)as_powi, "mmr", &base, &exp, &edx);
+				cpu.call_cdecl((void*)as_powi, "mmr", &base, &exp, &arg2);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
@@ -2937,10 +2942,15 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			} break;
 		case asBC_POWu:
 			{
-				edx.copy_address(*esp+local::overflowRet);
+#ifdef JIT_64
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+#else
+				Register arg2 = edx;
+#endif
+				arg2.copy_address(*esp+local::overflowRet);
 				MemAddress base(*edi-offset1);
 				MemAddress exp(*edi-offset2);
-				cpu.call_cdecl((void*)as_powu, "mmr", &base, &exp, &edx);
+				cpu.call_cdecl((void*)as_powu, "mmr", &base, &exp, &arg2);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
@@ -2948,55 +2958,108 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			} break;
 		case asBC_POWf:
 			{
-				eax.copy_address(*edi-offset1);
-				ecx.copy_address(*edi-offset2);
-				edx.copy_address(*esp+local::overflowRet);
-				ebx.copy_address(*edi-offset0);
-				cpu.call_cdecl((void*)fpow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+#ifdef JIT_64
+				Register arg0 = as<void*>(cpu.intArg64(0, 0));
+				Register arg1 = as<void*>(cpu.intArg64(1, 1));
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+				Register arg3 = as<void*>(cpu.intArg64(3, 3));
+#else
+				Register arg0 = eax;
+				Register arg1 = ecx;
+				Register arg2 = edx;
+				Register arg3 = ebx;
+#endif
+				arg0.copy_address(*edi-offset1);
+				arg1.copy_address(*edi-offset2);
+				arg2.copy_address(*esp+local::overflowRet);
+				arg3.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)fpow_wrapper, "rrrr", &arg0, &arg1, &arg2, &arg3);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
 			} break;
 		case asBC_POWd:
 			{
-				eax.copy_address(*edi-offset1);
-				ecx.copy_address(*edi-offset2);
-				edx.copy_address(*esp+local::overflowRet);
-				ebx.copy_address(*edi-offset0);
-				cpu.call_cdecl((void*)dpow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+#ifdef JIT_64
+				Register arg0 = as<void*>(cpu.intArg64(0, 0));
+				Register arg1 = as<void*>(cpu.intArg64(1, 1));
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+				Register arg3 = as<void*>(cpu.intArg64(3, 3));
+#else
+				Register arg0 = eax;
+				Register arg1 = ecx;
+				Register arg2 = edx;
+				Register arg3 = ebx;
+#endif
+				arg0.copy_address(*edi-offset1);
+				arg1.copy_address(*edi-offset2);
+				arg2.copy_address(*esp+local::overflowRet);
+				arg3.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)dpow_wrapper, "rrrr", &arg0, &arg1, &arg2, &arg3);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
 			} break;
 		case asBC_POWdi:
 			{
-				eax.copy_address(*edi-offset1);
-				edx.copy_address(*esp+local::overflowRet);
-				ebx.copy_address(*edi-offset0);
+#ifdef JIT_64
+				Register arg0 = as<void*>(cpu.intArg64(0, 0));
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+				Register arg3 = as<void*>(cpu.intArg64(3, 3));
+#else
+				Register arg0 = eax;
+				Register arg2 = edx;
+				Register arg3 = ebx;
+#endif
+				arg0.copy_address(*edi-offset1);
+				arg2.copy_address(*esp+local::overflowRet);
+				arg3.copy_address(*edi-offset0);
 				MemAddress exp(*edi-offset2);
-				cpu.call_cdecl((void*)dipow_wrapper, "rmrr", &eax, &exp, &edx, &ebx);
+				cpu.call_cdecl((void*)dipow_wrapper, "rmrr", &arg0, &exp, &arg2, &arg3);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
 			} break;
 		case asBC_POWi64:
 			{
-				eax.copy_address(*edi-offset1);
-				ecx.copy_address(*edi-offset2);
-				edx.copy_address(*esp+local::overflowRet);
-				ebx.copy_address(*edi-offset0);
-				cpu.call_cdecl((void*)i64pow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+#ifdef JIT_64
+				Register arg0 = as<void*>(cpu.intArg64(0, 0));
+				Register arg1 = as<void*>(cpu.intArg64(1, 1));
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+				Register arg3 = as<void*>(cpu.intArg64(3, 3));
+#else
+				Register arg0 = eax;
+				Register arg1 = ecx;
+				Register arg2 = edx;
+				Register arg3 = ebx;
+#endif
+				arg0.copy_address(*edi-offset1);
+				arg1.copy_address(*edi-offset2);
+				arg2.copy_address(*esp+local::overflowRet);
+				arg3.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)i64pow_wrapper, "rrrr", &arg0, &arg1, &arg2, &arg3);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
 			} break;
 		case asBC_POWu64:
 			{
-				eax.copy_address(*edi-offset1);
-				ecx.copy_address(*edi-offset2);
-				edx.copy_address(*esp+local::overflowRet);
-				ebx.copy_address(*edi-offset0);
-				cpu.call_cdecl((void*)u64pow_wrapper, "rrrr", &eax, &ecx, &edx, &ebx);
+#ifdef JIT_64
+				Register arg0 = as<void*>(cpu.intArg64(0, 0));
+				Register arg1 = as<void*>(cpu.intArg64(1, 1));
+				Register arg2 = as<void*>(cpu.intArg64(2, 2));
+				Register arg3 = as<void*>(cpu.intArg64(3, 3));
+#else
+				Register arg0 = eax;
+				Register arg1 = ecx;
+				Register arg2 = edx;
+				Register arg3 = ebx;
+#endif
+				arg0.copy_address(*edi-offset1);
+				arg1.copy_address(*edi-offset2);
+				arg2.copy_address(*esp+local::overflowRet);
+				arg3.copy_address(*edi-offset0);
+				cpu.call_cdecl((void*)u64pow_wrapper, "rrrr", &arg0, &arg1, &arg2, &arg3);
 				ecx = as<char>(*esp + local::overflowRet);
 				as<char>(ecx) &= as<char>(ecx);
 				ReturnCondition(NotZero);
