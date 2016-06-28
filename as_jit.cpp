@@ -3588,6 +3588,11 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		}
 	}
 
+	if(pos == OP_Last) {
+		if(!cpu.isIntArg64Register(intCount, a))
+			stackBytes += cpu.pushSize();
+	}
+
 	--i; --a; --intCount; --floatCount;
 	cpu.call_cdecl_prep(stackBytes);
 
@@ -3790,14 +3795,14 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		as<void*>(pax) = as<void*>(*containingObj);
 
 #ifdef __GNUC__
-		unsigned offset = ((size_t)func->func) >> 3;
+		unsigned offset = (unsigned)((size_t)func->func) >> 3;
 		offset *= sizeof(void*);
 
 		as<void*>(pax) += offset;
 		as<void*>(pax) = as<void*>(*pax);
 #endif
 #ifdef _MSC_VER
-		unsigned offset = ((size_t)func->func) >> 2;
+		unsigned offset = (unsigned)((size_t)func->func) >> 2;
 		offset *= sizeof(void*);
 
 		as<void*>(pax) += offset;
