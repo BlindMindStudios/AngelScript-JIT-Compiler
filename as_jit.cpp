@@ -3829,6 +3829,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 		if(sFunc->returnType.IsObjectHandle()) {
 			Register ret = as<void*>(cpu.intReturn64());
 			as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = ret;
+            as<void*>(*ebp + offsetof(asSVMRegisters,objectType)) = sFunc->returnType.GetTypeInfo();
 
 			//Add reference for returned auto handle
 			if(func->returnAutoHandle) {
@@ -3897,7 +3898,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				//Technically need to clear the objectRegister
 				//However, anything that tries to read this when it isn't valid is making a mistake
 				//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
-				int destruct = sFunc->returnType.GetBehaviour()->destruct;
+                int destruct = sFunc->returnType.GetBehaviour()->destruct;
 				if(destruct > 0) {
 					asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
 
@@ -3959,6 +3960,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 			}
 
 			as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = eax;
+            as<void*>(*ebp + offsetof(asSVMRegisters,objectType)) = sFunc->returnType.GetTypeInfo();
 
 			//Add reference for returned auto handle
 			if(func->returnAutoHandle) {
@@ -4015,6 +4017,7 @@ void SystemCall::call_getReturn(asSSystemFunctionInterface* func, asCScriptFunct
 			else {
 				//Store object pointer
 				as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = ecx;
+                as<void*>(*ebp + offsetof(asSVMRegisters,objectType)) = sFunc->returnType.GetTypeInfo();
 			}
 		}
 	}
