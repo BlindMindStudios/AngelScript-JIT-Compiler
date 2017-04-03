@@ -3898,7 +3898,7 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 				//Technically need to clear the objectRegister
 				//However, anything that tries to read this when it isn't valid is making a mistake
 				//as<void*>(*ebp + offsetof(asSVMRegisters,objectRegister)) = nullptr;
-                int destruct = sFunc->returnType.GetBehaviour()->destruct;
+				int destruct = sFunc->returnType.GetBehaviour()->destruct;
 				if(destruct > 0) {
 					asCScriptFunction* destructFunc = (asCScriptFunction*)sFunc->GetEngine()->GetFunctionById(destruct);
 
