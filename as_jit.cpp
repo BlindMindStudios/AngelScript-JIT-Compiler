@@ -1706,13 +1706,14 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 			esi += sizeof(void*);
 			break;
 		//case asBC_PshRPtr: //All pushes are handled above, near asBC_PshC4
-		case asBC_STR:
+		/* deprecated with Angelscript 2.32 
+        case asBC_STR:
 			{
 				const asCString &str = ((asCScriptEngine*)function->GetEngine())->GetConstantString(asBC_WORDARG0(pOp));
 				esi -= sizeof(void*) + sizeof(asDWORD);
 				as<void*>(*esi + sizeof(asDWORD)) = (void*)str.AddressOf();
 				as<asDWORD>(*esi) = (asDWORD)str.GetLength();
-			} break;
+			} break;*/
 		case asBC_CALLSYS:
 		case asBC_Thiscall1:
 			{
@@ -1977,24 +1978,29 @@ int asCJITCompiler::CompileFunction(asIScriptFunction *function, asJITFunction *
 
 				//Add reference to object 1, if not null
 				arg1 &= arg1;
-				auto prev = cpu.prep_long_jump(Zero);
-				{
-					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->addref);
-					sysCall.callSystemFunction(func, &arg1, callFlags);
-				}
-				cpu.end_long_jump(prev);
+                if (beh->addref)
+                {
+                    auto prev = cpu.prep_long_jump(Zero);
+                    {
+                        asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->addref);
+                        sysCall.callSystemFunction(func, &arg1, callFlags);
+                    }
+                    cpu.end_long_jump(prev);
+                }
 
 				//Release reference from object 2, if not null
 				arg1 = as<void*>(*esp+local::object2);
 				arg1 = as<void*>(*arg1);
 				arg1 &= arg1;
-				auto dest = cpu.prep_long_jump(Zero);
-				{
-					asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release);
-					sysCall.callSystemFunction(func, &arg1, callFlags);
-				}
-				cpu.end_long_jump(dest);
-
+                if (beh->release)
+                {
+                    auto dest = cpu.prep_long_jump(Zero);
+                    {
+                        asCScriptFunction* func = (asCScriptFunction*)function->GetEngine()->GetFunctionById(beh->release);
+                        sysCall.callSystemFunction(func, &arg1, callFlags);
+                    }
+                    cpu.end_long_jump(dest);
+                }
 				pax = as<void*>(*esp + local::object1);
 				pdx = as<void*>(*esp + local::object2);
 				as<void*>(*pdx) = pax;
