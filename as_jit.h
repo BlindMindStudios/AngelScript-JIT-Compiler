@@ -27,15 +27,15 @@ enum JITSettings {
 	JIT_FAST_REFCOUNT = 0x40,
 };
 
-class asCJITCompiler : public asIJITCompiler {
+class asCJITCompiler : public AS_NAMESPACE_QUALIFIER asIJITCompiler {
 	assembler::CodePage* activePage;
-	std::multimap<asJITFunction,assembler::CodePage*> pages;
+	std::multimap<AS_NAMESPACE_QUALIFIER asJITFunction,assembler::CodePage*> pages;
 
 	assembler::CriticalSection* lock;
 
 	unsigned flags;
 
-	std::multimap<asJITFunction,unsigned char**> jumpTables;
+	std::multimap<AS_NAMESPACE_QUALIFIER asJITFunction,unsigned char**> jumpTables;
 	unsigned char** activeJumpTable;
 	unsigned currentTableSize;
 
@@ -43,11 +43,11 @@ class asCJITCompiler : public asIJITCompiler {
 		void** jitFunction;
 		void** jitEntry;
 	};
-	std::multimap<asIScriptFunction*,DeferredCodePointer> deferredPointers;
+	std::multimap<AS_NAMESPACE_QUALIFIER asIScriptFunction*,DeferredCodePointer> deferredPointers;
 public:
 	asCJITCompiler(unsigned Flags = 0);
 	~asCJITCompiler();
-	int CompileFunction(asIScriptFunction *function, asJITFunction *output);
-    void ReleaseJITFunction(asJITFunction func);
+	int CompileFunction(AS_NAMESPACE_QUALIFIER asIScriptFunction *function, AS_NAMESPACE_QUALIFIER asJITFunction *output);
+    void ReleaseJITFunction(AS_NAMESPACE_QUALIFIER asJITFunction func);
 	void finalizePages();
 };
