@@ -3561,16 +3561,35 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 			arg0 = as<void*>(*esi + sizeof(asPWORD));
 		}
 		break;
-        case OP_This:
+		case OP_This:
+		{
+			//
+			// If we have any argument then argOffset is the stack (r13) offset to that
+			// in the case of a return value allocated on the stack, when calling a "thiscall"
+			// function, argOffset will point to it, i.e:
+			//
+			// string foo::bar() -> r13[0]->this r13[1]->string mem
+			//
+			// if it's a simple function that returns a register size value, then argOffset == 0
+			//
+			// something@ bar::foo() -> r13[0]->this r13[1]->nothing
+			//
+			// the return value is picked up in rax
+			//
+			// NOTE: "esi" is actually r13 in this case
+			 
+			arg0 = as<void*>(*esi + argOffset);
+		}
+		break;
 		case OP_None:
 		{
-            arg0 = as<void*>(*esi);
+			arg0 = as<void*>(*esi);
 		}
 		break;
 		default:
 			_ASSERT(false && "unknown operation");
 		}
-        
+		 
 		if(acceptReturn)
 			as<void*>(*esp + local::retPointer) = arg0;
 		retPointer = true;
