@@ -3515,10 +3515,81 @@ void SystemCall::call_64conv(asSSystemFunctionInterface* func,
 
 	if(sFunc->DoesReturnOnStack()) {
 		Register arg0 = as<void*>(cpu.intArg64(firstPos, firstPos, pax));
-		if(pos == OP_None || objPointer)
-			arg0 = as<void*>(*esi);
-		else
+		//
+		// TOMW - 16/05/2022
+		// This switch statement is a (MSVC?) fix for incorrect return value
+		// location when an object is returned on the stack
+		//
+		// AngelScript uses a structure:
+		//
+		// struct asSVMRegisters
+		// {
+		//		asDWORD* programPointer;     // points to current bytecode instruction
+		//		asDWORD* stackFramePointer;  // function stack frame
+		//		asDWORD* stackPointer;       // top of stack (grows downward)
+		//		asQWORD           valueRegister;      // temp register for primitives
+		//		void* objectRegister;     // temp register for objects and handles
+		//		asITypeInfo* objectType;         // type of object held in object register
+		//		bool              doProcessSuspend;   // whether or not the JIT should break out when it encounters a suspend instruction
+		//		asIScriptContext* ctx;                // the active context
+		// };
+		//
+		//
+		// And "stackPointer" is an array that contains any "this" or object pointer 
+		// any argument pointers and if "DoesReturnOnStack()" is true, it also contains
+		// a pointer to the space for the return value
+		//
+		// This was not correctly being handled an was overwriting one of the argument pointers
+		// 
+		// The bug only appeared when we converted functions from this:   string foo( string, string )
+		// to this:                                                       string foo( const string& in, const string& in )
+		//
+		// which caused an object lifetime error, where the reference was being released
+		//
+		// In this JIT compiler, this asSVMRegisters is pointed to by ebp
+		// also, r13 (the variable esi) is pointing at asDWORD* stackPointer
+		// 
+
+		// AngelScript return value memory is already preallocated on the stack (r13),
+		// and the pointer to the location is found before the first arg
+		switch (pos)
+		{
+		case OP_First:
+		case OP_Last:
+		{
+			//always second item in the array
 			arg0 = as<void*>(*esi + sizeof(asPWORD));
+		}
+		break;
+		case OP_This:
+		{
+			//
+			// If we have any argument then argOffset is the stack (r13) offset to that
+			// in the case of a return value allocated on the stack, when calling a "thiscall"
+			// function, argOffset will point to it, i.e:
+			//
+			// string foo::bar() -> r13[0]->this r13[1]->string mem
+			//
+			// if it's a simple function that returns a register size value, then argOffset == 0
+			//
+			// something@ bar::foo() -> r13[0]->this r13[1]->nothing
+			//
+			// the return value is picked up in rax
+			//
+			// NOTE: "esi" is actually r13 in this case
+			 
+			arg0 = as<void*>(*esi + argOffset);
+		}
+		break;
+		case OP_None:
+		{
+			arg0 = as<void*>(*esi);
+		}
+		break;
+		default:
+			_ASSERT(false && "unknown operation");
+		}
+		 
 		if(acceptReturn)
 			as<void*>(*esp + local::retPointer) = arg0;
 		retPointer = true;
